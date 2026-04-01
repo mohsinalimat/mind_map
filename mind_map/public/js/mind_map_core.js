@@ -43,6 +43,7 @@ class MindMapPage {
 		this._drag_preview = null;
 		this._drag_hover_node = null;
 		this._drag_click_suppressed = false;
+		this._shortcut_dialog = null;
 
 		this._make_toolbar();
 		this._make_layout();
@@ -69,7 +70,13 @@ class MindMapPage {
 			label: __('Theme'),
 			fieldtype: 'Select',
 			options: '\nLight\nDark\nAuto',
-			change: () => this._apply_theme(),
+			change: () => {
+				this._apply_theme();
+				if (this.doc) {
+					this.doc.theme = this.field_theme.get_value() || 'Auto';
+					this._mark_dirty();
+				}
+			},
 		});
 
 		this.field_layout = p.add_field({
@@ -113,9 +120,10 @@ class MindMapPage {
 	_make_layout() {
 		const wrap = $(this.wrapper).find('.page-content, .page-body').first();
 		wrap.css({ padding: '0', overflow: 'hidden' });
+		$(wrap).closest('.main-section').css('overflow', 'hidden');
 
 		wrap.html(`
-			<div id="mm-root" style="display:flex;height:calc(100vh - 84px);overflow:hidden;position:relative;background:var(--bg-color)">
+			<div id="mm-root" style="display:flex;height:calc(100vh - 95px);overflow:hidden;position:relative;background:var(--bg-color)">
 				<div id="mm-canvas" style="flex:1;position:relative;overflow:hidden;cursor:default;outline:none;user-select:none" tabindex="0">
 					<svg id="mm-svg" style="width:100%;height:100%;display:block;overflow:visible">
 						<defs id="mm-defs"></defs>
@@ -130,32 +138,26 @@ class MindMapPage {
 				<div id="mm-drop-indicator" style="display:none;position:absolute;pointer-events:none;z-index:200;height:3px;border-radius:999px;background:#10B981;box-shadow:0 0 0 1px rgba(255,255,255,0.75),0 0 6px rgba(16,185,129,0.28);transition:top 0.08s"></div>
 			</div>
 
-			<div id="mm-footer" style="display:flex;align-items:center;gap:12px;padding:6px 15px;background:var(--card-bg);border-top:1px solid var(--border-color);font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden">
-				<span style="display:inline-flex;align-items:center;gap:6px">
+			<div id="mm-footer" style="display:flex;align-items:center;gap:14px;padding:8px 15px;background:var(--card-bg);border-top:1px solid var(--border-color);font-size:12px;color:var(--text-muted);white-space:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin">
+				<span style="display:inline-flex;align-items:center;gap:8px">
 					<span>Layout</span>
-					<select id="mm-layout-quick" style="height:24px;padding:0 8px;border:1px solid var(--border-color);border-radius:6px;background:var(--card-bg);color:var(--text-color);font-size:11px">
+					<select id="mm-layout-quick" class="form-control input-xs" style="height:30px;padding:0 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--card-bg);color:var(--text-color);font-size:12px;min-width:88px">
 						<option value="Right">Right</option>
 						<option value="Tree">Tree</option>
 					</select>
 				</span>
 				<span>·</span>
-				<span><kbd>Tab</kbd> Child</span>
+				<span id="mm-description-wrap" style="display:inline-flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px;overflow:hidden">
+					<span style="font-weight:600;color:var(--text-color)">Description</span>
+					<span id="mm-description-text" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)">No description</span>
+					<button id="mm-description-edit" class="btn btn-default btn-sm" title="Edit Description" style="height:30px;min-width:30px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;font-size:14px">✎</button>
+				</span>
 				<span>·</span>
-				<span><kbd>Shift+Enter</kbd> Sibling</span>
-				<span>·</span>
-				<span><kbd>F2</kbd> Rename</span>
-				<span>·</span>
-				<span><kbd>Del</kbd> Delete</span>
-				<span>·</span>
-				<span><kbd>Space</kbd> Pan</span>
-				<span>·</span>
-				<span><kbd>Ctrl+Z</kbd> Undo</span>
-				<span>·</span>
-				<span><kbd>F</kbd> Fit Screen</span>
-				<span>·</span>
-				<span id="mm-mode-label" style="font-weight:600;color:var(--primary)">✦ Select Mode</span>
+				<span id="mm-mode-label" style="font-weight:600;color:var(--text-color)">✦ Select Mode</span>
 				<span id="mm-save-status" style="margin-left:auto;font-weight:700"></span>
-				<span id="mm-fit-btn" title="Fit to Screen" style="cursor:pointer;font-size:18px;padding:2px 6px;border-radius:5px;line-height:1;display:inline-flex;align-items:center;justify-content:center;transition:background 0.15s" onmouseenter="this.style.background='var(--border-color)'" onmouseleave="this.style.background='transparent'">⊙</span>
+				<button id="mm-shortcuts-btn" class="btn btn-default btn-sm" title="Shortcuts" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:16px">⌨</button>
+				<button id="mm-theme-btn" class="btn btn-default btn-sm" title="Theme" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:18px"></button>
+				<button id="mm-fit-btn" class="btn btn-default btn-sm" title="Fit to Screen" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:18px">⊙</button>
 			</div>
 		`);
 
@@ -172,9 +174,13 @@ class MindMapPage {
 		document.getElementById('mm-fit-btn').addEventListener('click', () => {
 			if (this.tree) this._fit_view(this.tree);
 		});
+		document.getElementById('mm-shortcuts-btn').addEventListener('click', () => this._open_shortcuts_dialog());
+		document.getElementById('mm-theme-btn').addEventListener('click', () => this._cycle_theme());
+		document.getElementById('mm-description-edit').addEventListener('click', () => this._open_description_dialog());
 
 		document.getElementById('mm-layout-quick').addEventListener('change', (e) => {
 			this.field_layout.set_value(e.target.value);
+			if (this.doc) setTimeout(() => this._save(), 300);
 		});
 
 		document.addEventListener('keydown', (e) => {
@@ -403,6 +409,8 @@ class MindMapPage {
 				if (!r.message) return;
 				this.doc = r.message;
 				localStorage.setItem('mm_last_map', name);
+				this.field_theme.set_value(this.doc.theme || 'Auto');
+				this._update_footer_meta();
 				this._render(r.message.map_json || '{}');
 			},
 		});
@@ -418,6 +426,7 @@ class MindMapPage {
 		document.getElementById('mm-placeholder').style.display = 'none';
 		this.tree = this._build(data, null);
 		this.tree = this._build(this._serialize(this.tree), null);
+		this._update_footer_meta();
 		this._re_render();
 		this._fit_view(this.tree);
 		this._history = [JSON.stringify(this._serialize(this.tree))];
@@ -1611,9 +1620,17 @@ class MindMapPage {
 			args: {
 				doctype: 'Mind Map',
 				name: this.doc.name,
-				fieldname: { map_json: this._stringify_map(this.tree) }
+				fieldname: {
+					map_json: this._stringify_map(this.tree),
+					theme: this.field_theme?.get_value() || 'Auto',
+					description: this.doc.description || ''
+				}
 			},
-			callback: () => this._set_save_status('✓ Saved')
+			callback: () => {
+				this.doc.theme = this.field_theme?.get_value() || 'Auto';
+				this._set_save_status('✓ Saved');
+				this._update_footer_meta();
+			}
 		});
 	}
 
@@ -1736,8 +1753,127 @@ class MindMapPage {
 	// ── Theme / Misc ───────────────────────────────────────────────────────────
 
 	_apply_theme() {
+		const root = document.getElementById('mm-root');
+		if (root) {
+			const theme = this.field_theme?.get_value() || this.doc?.theme || 'Auto';
+			const themeVars = {
+				Light: {
+					'--bg-color': '#f5f7fa',
+					'--card-bg': '#ffffff',
+					'--text-color': '#1f272e',
+					'--text-muted': '#6b7280',
+					'--border-color': '#d1d8dd',
+					'--primary': '#2490ef',
+				},
+				Dark: {
+					'--bg-color': '#1f2329',
+					'--card-bg': '#2a2f36',
+					'--text-color': '#f5f7fa',
+					'--text-muted': '#aab4bf',
+					'--border-color': '#454b53',
+					'--primary': '#5aa9ff',
+				},
+			};
+			['--bg-color', '--card-bg', '--text-color', '--text-muted', '--border-color', '--primary'].forEach(key => {
+				root.style.removeProperty(key);
+			});
+			if (themeVars[theme]) {
+				Object.entries(themeVars[theme]).forEach(([key, value]) => root.style.setProperty(key, value));
+			}
+		}
+		this._update_theme_button();
+		if (!this.tree) return;
 		this.tree = this._build(this._serialize(this.tree), null);
 		this._re_render();
+	}
+
+	_update_theme_button() {
+		const btn = document.getElementById('mm-theme-btn');
+		if (!btn) return;
+		const theme = this.field_theme?.get_value() || this.doc?.theme || 'Auto';
+		btn.textContent = theme === 'Light' ? '☀' : theme === 'Dark' ? '☾' : '◐';
+		btn.setAttribute('title', `Theme: ${theme}`);
+	}
+
+	_cycle_theme() {
+		const order = ['Auto', 'Light', 'Dark'];
+		const current = this.field_theme?.get_value() || 'Auto';
+		const next = order[(order.indexOf(current) + 1) % order.length];
+		this.field_theme.set_value(next);
+		if (this.doc) this._save();
+	}
+
+	_update_footer_meta() {
+		const text = document.getElementById('mm-description-text');
+		if (text) {
+			const description = (this.doc?.description || '').trim();
+			text.textContent = description || 'No description';
+			text.setAttribute('title', description || 'No description');
+		}
+		this._update_theme_button();
+	}
+
+	_open_shortcuts_dialog() {
+		if (this._shortcut_dialog) {
+			this._shortcut_dialog.show();
+			return;
+		}
+		const d = new frappe.ui.Dialog({
+			title: __('Keyboard Shortcuts'),
+			fields: [
+				{
+					fieldtype: 'HTML',
+					fieldname: 'shortcuts_html',
+					options: `
+						<div style="display:flex;flex-direction:column;gap:2px;font-size:13px;padding:4px 0">
+							${[
+								['Ctrl+S', 'Save'],
+								['Tab', 'Add child'],
+								['Shift+Enter', 'Add sibling'],
+								['F2', 'Rename selected node'],
+								['Delete', 'Delete selected node'],
+								['Space', 'Pan mode'],
+								['Ctrl+Z', 'Undo'],
+								['Ctrl+Shift+Z', 'Redo'],
+								['F', 'Fit screen'],
+							].map(([key, label]) => `
+								<div style="display:flex;align-items:center;gap:16px;padding:7px 4px;border-bottom:1px solid var(--border-color)">
+									<div style="min-width:160px">
+										<span style="display:inline-flex;align-items:center;gap:2px;background:var(--card-bg);border:1px solid var(--border-color);border-bottom:3px solid var(--border-color);border-radius:5px;padding:3px 10px;font-size:12px;font-weight:600;font-family:var(--font-stack);color:var(--text-color);box-shadow:0 1px 3px rgba(0,0,0,0.25),inset 0 1px 0 rgba(255,255,255,0.08)">${key}</span>									</div>
+									<span style="color:var(--text-color)">${label}</span>
+								</div>
+							`).join('')}
+						</div>
+					`				}
+			],
+			primary_action_label: __('Close'),
+			primary_action: () => d.hide(),
+		});
+		this._shortcut_dialog = d;
+		d.show();
+	}
+
+	_open_description_dialog() {
+		if (!this.doc) return;
+		const d = new frappe.ui.Dialog({
+			title: __('Edit Description'),
+			fields: [
+				{
+					fieldtype: 'Small Text',
+					fieldname: 'description',
+					label: __('Description'),
+					default: this.doc.description || ''
+				}
+			],
+			primary_action_label: __('Save'),
+			primary_action: (values) => {
+				this.doc.description = values.description || '';
+				this._update_footer_meta();
+				this._mark_dirty();
+				d.hide();
+			},
+		});
+		d.show();
 	}
 
 	_remember_layout() {

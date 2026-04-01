@@ -1,33 +1,142 @@
-### Mind Map
+# Mind Map
 
-Mind Mapping
+Mind Map is a Frappe app for creating, editing, and navigating interactive mind maps inside Desk.
 
-### Installation
+It is designed for fast note structuring, planning, documentation trees, product breakdowns, SOP maps, and knowledge organization. Maps are stored as JSON in a standard Frappe DocType, while editing happens in a dedicated visual page.
 
-You can install this app using the [bench](https://github.com/frappe/bench) CLI:
+![Mind Map Preview](mind_map/public/mind_map_1.png)
 
-```bash
-cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch version-16
+## What It Does
+
+- Create and manage mind maps as Frappe documents.
+- Open maps in a full-screen visual editor page.
+- Edit node labels directly inside the map.
+- Organize ideas in `Right` or `Tree` layout.
+- Expand and collapse branches quickly.
+- Reorder nodes with drag and drop.
+- Export maps as `PNG` or `SVG`.
+
+## Main Features
+
+### Visual Mind Map Page
+
+The app includes a dedicated Desk page called `mind-map-viewer` for working on maps visually.
+
+- Full-canvas editing experience
+- Clean zoomable SVG-based map rendering
+- Fit-to-screen action
+- Context menu for node actions
+- Toolbar for open, save, export, and view controls
+
+### Two Layout Modes
+
+The app supports two working layouts:
+
+- `Right`: Traditional single-direction mind map layout
+- `Tree`: Bidirectional layout with branches on both left and right
+
+Tree mode now keeps sibling placement more stable during collapse and expand actions, while still allowing deliberate side changes through reordering.
+
+### Direct Node Editing
+
+You can rename nodes directly in place.
+
+- Double-click a node to edit
+- `F2` to rename selected node
+- New child and sibling nodes start in edit mode
+- Text editing happens inline without opening a dialog
+
+### Node Operations
+
+Available actions include:
+
+- Add child node
+- Add sibling node
+- Add parent node
+- Rename node
+- Delete node
+- Expand or collapse node branches
+
+Most of these are available through both shortcuts and the node context menu.
+
+### Drag and Drop
+
+The editor supports drag and drop for structure changes.
+
+- Reorder sibling nodes
+- Reparent nodes under other nodes
+- Visual drop indicator while dragging
+- Root-level behavior in `Tree` layout respects side placement more intelligently
+
+### Multi-Select and Lasso Selection
+
+You can select multiple nodes for batch actions.
+
+- `Shift`, `Ctrl`, or `Cmd` click to multi-select
+- Drag on empty canvas to lasso-select multiple nodes
+- Delete selected nodes together
+
+### Pan and Zoom
+
+Navigation is designed for larger maps.
+
+- Mouse wheel zoom
+- Spacebar pan mode
+- Click-and-drag canvas navigation
+- Fit map to screen with `F`
+
+### Export
+
+You can export maps for sharing or documentation.
+
+- Export **PNG**
+- Export **SVG**
+
+### Theme Support
+
+The document based a theme selection:
+
+- Light
+- Dark
+- Auto
+
+### Autosave
+
+Maps are marked dirty during editing and saved automatically after a short delay, while also supporting manual save from the toolbar.
+
+## Keyboard Shortcuts
+
+Current shortcuts shown in the app footer:
+
+- `Tab`: Add child
+- `Shift+Enter`: Add sibling
+- `F2`: Rename
+- `Del` / `Backspace`: Delete
+- `Space`: Pan mode
+- `Ctrl+Z`: Undo
+- `F`: Fit screen
+
+
+## Good Use Cases
+
+- Project planning
+- Process mapping
+- Technical documentation outline
+- Product or module breakdown
+- SOP structure drafting
+- Brainstorming and idea clustering
+- Department, report, and workflow mapping
+
+## Installation
+
+```
+bench get-app https://github.com/nilpatel42/mind_map --branch version-16
+```
+```
 bench install-app mind_map
 ```
 
-### Contributing
 
-This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
+## License
 
-```bash
-cd apps/mind_map
-pre-commit install
-```
-
-Pre-commit is configured to use the following tools for checking and formatting your code:
-
-- ruff
-- eslint
-- prettier
-- pyupgrade
-
-### License
-
-mit
+MIT
