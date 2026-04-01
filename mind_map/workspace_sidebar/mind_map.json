@@ -1,0 +1,50 @@
+{
+ "app": "mind_map",
+ "creation": "2026-03-31 19:13:18.729130",
+ "docstatus": 0,
+ "doctype": "Workspace Sidebar",
+ "idx": 0,
+ "items": [
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "audio-waveform",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Mind Map",
+   "link_to": "mind-map-viewer",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Doctype",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "map-pin-check-inside",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Mind Map",
+   "link_to": "Mind Map",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-04-01 10:32:07.089278",
+ "modified_by": "Administrator",
+ "module": "Mind Map",
+ "name": "Mind Map",
+ "owner": "Administrator",
+ "standard": 1,
+ "title": "Mind Map"
+}

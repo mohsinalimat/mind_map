@@ -1,0 +1,19 @@
+{
+ "content": null,
+ "creation": "2026-03-25 15:07:26.595051",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-03-25 15:07:36.813611",
+ "modified_by": "Administrator",
+ "module": "Mind Map",
+ "name": "mind-map-viewer",
+ "owner": "Administrator",
+ "page_name": "mind-map-viewer",
+ "roles": [],
+ "script": null,
+ "standard": "Yes",
+ "style": ["mind_map_core.js"],
+ "system_page": 0,
+ "title": "Mind Map"
+}
