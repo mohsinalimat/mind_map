@@ -44,7 +44,14 @@ class MindMapPage {
 		this._drag_hover_node = null;
 		this._drag_click_suppressed = false;
 		this._shortcut_dialog = null;
-
+		this._focus_root_id = null;
+		this._viewport_anim = null;
+		this._suppress_dirty = false;
+		this._suppress_doc_change = false;
+		this._loading_doc = false;
+		this._save_in_flight = false;
+		this._queued_save = false;
+		this._is_dirty = false;
 		this._make_toolbar();
 		this._make_layout();
 	}
@@ -53,6 +60,7 @@ class MindMapPage {
 
 	_make_toolbar() {
 		const p = this.page;
+		this._update_page_header();
 
 		this.field_doc = p.add_field({
 			fieldname: 'mind_map_name',
@@ -60,6 +68,7 @@ class MindMapPage {
 			fieldtype: 'Link',
 			options: 'Mind Map',
 			change: () => {
+				if (this._suppress_doc_change) return;
 				const v = this.field_doc.get_value();
 				if (v) this._load(v);
 			},
@@ -72,7 +81,7 @@ class MindMapPage {
 			options: '\nLight\nDark\nAuto',
 			change: () => {
 				this._apply_theme();
-				if (this.doc) {
+				if (this.doc && !this._suppress_dirty) {
 					this.doc.theme = this.field_theme.get_value() || 'Auto';
 					this._mark_dirty();
 				}
@@ -87,8 +96,8 @@ class MindMapPage {
 			change: () => {
 				this._remember_layout();
 				this._re_render();
-				if (this.tree) this._fit_view(this.tree);
-				if (this.tree) this._mark_dirty();
+				if (this.tree) this._fit_view(this._get_render_root());
+				if (this.tree && !this._suppress_dirty) this._mark_dirty();
 			},
 		});
 
@@ -96,12 +105,21 @@ class MindMapPage {
 		p.add_inner_button(__('Open'), () => this._open_doc(), __('Mind Map'));
 
 		p.add_inner_button(__('Export PNG'), () => this._export_png(), __('Export'));
+		p.add_inner_button(__('Export JPG'), () => this._export_jpg(), __('Export'));
 		p.add_inner_button(__('Export SVG'), () => this._export_svg(), __('Export'));
 
 		p.add_inner_button(__('Expand All'), () => this._toggle_all(false), __('View'));
 		p.add_inner_button(__('Collapse All'), () => this._toggle_all(true), __('View'));
 
 		p.set_primary_action(__('Save'), () => this._save(), 'save');
+		setTimeout(() => this._update_save_button_label(), 0);
+	}
+
+	_update_page_header() {
+		if (!this.page) return;
+		const title = __('Mind Map');
+		this.page.set_title(title);
+		this.page.set_title_sub('');
 	}
 
 	_toggle_all(state) {
@@ -139,23 +157,14 @@ class MindMapPage {
 			</div>
 
 			<div id="mm-footer" style="display:flex;align-items:center;gap:14px;padding:8px 15px;background:var(--card-bg);border-top:1px solid var(--border-color);font-size:12px;color:var(--text-muted);white-space:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin">
-				<span style="display:inline-flex;align-items:center;gap:8px">
-					<span>Layout</span>
-					<select id="mm-layout-quick" class="form-control input-xs" style="height:30px;padding:0 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--card-bg);color:var(--text-color);font-size:12px;min-width:88px">
-						<option value="Right">Right</option>
-						<option value="Tree">Tree</option>
-					</select>
-				</span>
-				<span>·</span>
 				<span id="mm-description-wrap" style="display:inline-flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px;overflow:hidden">
-					<span style="font-weight:600;color:var(--text-color)">Description</span>
-					<span id="mm-description-text" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)">No description</span>
+					<span id="mm-description-text" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-color);font-weight:600">Document Name | Description</span>
 					<button id="mm-description-edit" class="btn btn-default btn-sm" title="Edit Description" style="height:30px;min-width:30px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;font-size:14px">✎</button>
 				</span>
-				<span>·</span>
 				<span id="mm-mode-label" style="font-weight:600;color:var(--text-color)">✦ Select Mode</span>
-				<span id="mm-save-status" style="margin-left:auto;font-weight:700"></span>
+				<span id="mm-save-status" style="display:none;font-weight:700"></span>
 				<button id="mm-shortcuts-btn" class="btn btn-default btn-sm" title="Shortcuts" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:16px">⌨</button>
+				<button id="mm-layout-btn" class="btn btn-default btn-sm" title="Layout: Right" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:17px;font-weight:600">⇢</button>
 				<button id="mm-theme-btn" class="btn btn-default btn-sm" title="Theme" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:18px"></button>
 				<button id="mm-fit-btn" class="btn btn-default btn-sm" title="Fit to Screen" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:18px">⊙</button>
 			</div>
@@ -172,14 +181,15 @@ class MindMapPage {
 		const cv = document.getElementById('mm-canvas');
 
 		document.getElementById('mm-fit-btn').addEventListener('click', () => {
-			if (this.tree) this._fit_view(this.tree);
+			if (this.tree) this._fit_view(this._get_render_root());
 		});
 		document.getElementById('mm-shortcuts-btn').addEventListener('click', () => this._open_shortcuts_dialog());
 		document.getElementById('mm-theme-btn').addEventListener('click', () => this._cycle_theme());
 		document.getElementById('mm-description-edit').addEventListener('click', () => this._open_description_dialog());
-
-		document.getElementById('mm-layout-quick').addEventListener('change', (e) => {
-			this.field_layout.set_value(e.target.value);
+		document.getElementById('mm-layout-btn').addEventListener('click', () => {
+			const current = this.field_layout?.get_value() || 'Right';
+			const next = current === 'Right' ? 'Tree' : 'Right';
+			this.field_layout.set_value(next);
 			if (this.doc) setTimeout(() => this._save(), 300);
 		});
 
@@ -195,13 +205,17 @@ class MindMapPage {
 				e.preventDefault();
 				this._undo();
 			}
+			if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S') && !this._is_editing()) {
+				e.preventDefault();
+				this._save();
+			}
 			if ((e.ctrlKey || e.metaKey) && (e.key === 'Z' || (e.key === 'z' && e.shiftKey)) && !this._is_editing()) {
 				e.preventDefault();
 				this._redo();
 			}
 			if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey && !this._is_editing()) {
 				e.preventDefault();
-				if (this.tree) this._fit_view(this.tree);
+				if (this.tree) this._fit_view(this._get_render_root());
 			}
 		});
 
@@ -247,6 +261,8 @@ class MindMapPage {
 			this._hide_ctx();
 			// Do NOT e.preventDefault() here — let browser native menu show
 		});
+		cv.addEventListener('dragstart', (e) => e.preventDefault());
+		cv.addEventListener('selectstart', (e) => e.preventDefault());
 
 		window.addEventListener('mouseup', () => {
 			if (this.drag) {
@@ -332,6 +348,11 @@ class MindMapPage {
 		document.getElementById('mm-canvas').addEventListener('keydown', e => {
 			if (this._is_editing()) return;
 			if (e.code === 'Space') return;
+			if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+				e.preventDefault();
+				this._save();
+				return;
+			}
 
 			if ((e.key === 'Delete' || e.key === 'Backspace') && this._selected_nodes.size > 1) {
 				e.preventDefault();
@@ -388,7 +409,7 @@ class MindMapPage {
 		const snap = JSON.parse(this._history[this._history_index]);
 		this.tree = this._build(snap, null);
 		this._re_render();
-		this._set_save_status('● Unsaved');
+		this._set_save_status('Unsaved');
 		this._history_locked = false;
 	}
 
@@ -399,6 +420,39 @@ class MindMapPage {
 		if (g) g.setAttribute('transform', `translate(${this.vx},${this.vy}) scale(${this.vscale})`);
 	}
 
+	_animate_viewport(target, opts = {}) {
+		const duration = opts.duration ?? 240;
+		const immediate = !!opts.immediate;
+		if (this._viewport_anim) {
+			cancelAnimationFrame(this._viewport_anim);
+			this._viewport_anim = null;
+		}
+		if (immediate) {
+			this.vx = target.vx;
+			this.vy = target.vy;
+			this.vscale = target.vscale;
+			this._apply_transform();
+			return;
+		}
+		const start = { vx: this.vx, vy: this.vy, vscale: this.vscale };
+		const startedAt = performance.now();
+		const ease = (t) => 1 - Math.pow(1 - t, 3);
+		const tick = (now) => {
+			const p = Math.min(1, (now - startedAt) / duration);
+			const e = ease(p);
+			this.vx = start.vx + (target.vx - start.vx) * e;
+			this.vy = start.vy + (target.vy - start.vy) * e;
+			this.vscale = start.vscale + (target.vscale - start.vscale) * e;
+			this._apply_transform();
+			if (p < 1) {
+				this._viewport_anim = requestAnimationFrame(tick);
+			} else {
+				this._viewport_anim = null;
+			}
+		};
+		this._viewport_anim = requestAnimationFrame(tick);
+	}
+
 	// ── Load / Render ──────────────────────────────────────────────────────────
 
 	_load(name) {
@@ -407,11 +461,23 @@ class MindMapPage {
 			args: { doctype: 'Mind Map', name },
 			callback: r => {
 				if (!r.message) return;
+				clearTimeout(this._autosave_timer);
+				this._queued_save = false;
+				this._is_dirty = false;
+				this._loading_doc = true;
+				this._suppress_dirty = true;
 				this.doc = r.message;
 				localStorage.setItem('mm_last_map', name);
 				this.field_theme.set_value(this.doc.theme || 'Auto');
+				this._update_page_header();
 				this._update_footer_meta();
 				this._render(r.message.map_json || '{}');
+				setTimeout(() => {
+					this._suppress_dirty = false;
+					this._loading_doc = false;
+					this._is_dirty = false;
+					this._set_save_status('Saved', { silent: true });
+				}, 0);
 			},
 		});
 	}
@@ -421,37 +487,46 @@ class MindMapPage {
 		try { data = JSON.parse(json_str); } catch (e) { data = { label: 'Mind Map Root' }; }
 		const savedLayout = data.layout || this._get_saved_layout();
 		if (savedLayout === 'Right' || savedLayout === 'Tree') {
+			this._suppress_dirty = true;
 			this.field_layout.set_value(savedLayout);
+			this._suppress_dirty = false;
 		}
 		document.getElementById('mm-placeholder').style.display = 'none';
 		this.tree = this._build(data, null);
 		this.tree = this._build(this._serialize(this.tree), null);
+		this._focus_root_id = null;
+		this._is_dirty = false;
 		this._update_footer_meta();
 		this._re_render();
-		this._fit_view(this.tree);
+		this._fit_view(this._get_render_root(), { immediate: true });
 		this._history = [JSON.stringify(this._serialize(this.tree))];
 		this._history_index = 0;
 	}
 
 	_re_render() {
 		if (!this.tree) return;
-		const quickLayout = document.getElementById('mm-layout-quick');
-		if (quickLayout) quickLayout.value = this.field_layout?.get_value() || 'Right';
+		this._update_layout_button();
+		this._update_focus_button();
 		const g = document.getElementById('mm-g');
 		const defs = document.getElementById('mm-defs');
+		const renderRoot = this._get_render_root();
+		if (!renderRoot) return;
 		g.innerHTML = '';
 		defs.innerHTML = '';
-		this._layout(this.tree);
-		this._draw_edges(g, this.tree);
-		this._draw_nodes(g, this.tree);
+		this._prepare_render_depths(renderRoot);
+		this._layout(renderRoot);
+		this._draw_edges(g, renderRoot);
+		this._draw_nodes(g, renderRoot);
 
 		if (this.selected) {
-			const f = this._find_by_id(this.tree, this.selected._id);
+			const f = this._find_by_id(renderRoot, this.selected._id);
 			if (f) this._select(f);
+			else this._deselect();
 		}
 		this._selected_nodes.forEach(id => {
-			const n = this._find_by_id(this.tree, id);
+			const n = this._find_by_id(renderRoot, id);
 			if (n) this._highlight_multi(n, true);
+			else this._selected_nodes.delete(id);
 		});
 	}
 
@@ -484,7 +559,7 @@ class MindMapPage {
 
 		// Pre-calculate widths for all nodes
 		const preWidth = (n) => {
-			n.w = this._get_node_width(n.label, n.depth);
+			n.w = this._get_node_width(n.label, this._depth(n));
 			n.children.forEach(preWidth);
 		};
 		preWidth(root);
@@ -570,6 +645,7 @@ class MindMapPage {
 			};
 			solve(root, 0, 0);
 		}
+
 	}
 
 	// ── Colors ─────────────────────────────────────────────────────────────────
@@ -623,6 +699,25 @@ class MindMapPage {
 		else labelEl.textContent = text;
 	}
 
+	_depth(node) {
+		return node?._render_depth ?? node?.depth ?? 0;
+	}
+
+	_get_render_root() {
+		if (!this.tree) return null;
+		if (!this._focus_root_id) return this.tree;
+		const focused = this._find_by_id(this.tree, this._focus_root_id);
+		if (focused) return focused;
+		this._focus_root_id = null;
+		return this.tree;
+	}
+
+	_prepare_render_depths(root, depth = 0) {
+		if (!root) return;
+		root._render_depth = depth;
+		(root.children || []).forEach(child => this._prepare_render_depths(child, depth + 1));
+	}
+
 	_get_frame_style(node, col, width = node.w) {
 		const frame = this._get_frame_metrics(node, width);
 		return {
@@ -631,16 +726,75 @@ class MindMapPage {
 				width: frame.width + 'px',
 				height: frame.height + 'px',
 				boxSizing: 'border-box',
-				background: 'transparent',
+				background: this._mix_colors(col, '#ffffff', 0.82),
 				border: `${frame.strokeWidth}px dashed ${col}`,
 				borderRadius: frame.rx + 'px',
-				opacity: '0.95',
+				opacity: '0.98',
 			}
 		};
 	}
 
 	_get_label_text_nudge(node) {
-		return node.depth === 0 ? '-1px' : '0px';
+		return this._depth(node) === 0 ? '-1px' : '0px';
+	}
+
+	_get_node_text_color(node, active = false) {
+		if (active) return '#17324a';
+		return this._depth(node) === 0 ? '#fff' : 'var(--text-color)';
+	}
+
+	_set_node_label_active_state(node, active) {
+		const grp = this._get_node_group(node);
+		if (!grp) return;
+		const label = grp.querySelector('.mm-label');
+		if (!label) return;
+		if ((label.tagName || '').toLowerCase() === 'text') {
+			label.setAttribute('fill', this._get_node_text_color(node, active));
+			return;
+		}
+		const inner = label.querySelector('div');
+		if (inner) {
+			const color = this._get_node_text_color(node, active);
+			inner.style.color = color;
+			inner.style.webkitTextFillColor = color;
+		}
+	}
+
+	_insert_selection_box(grp, node, col) {
+		const selBox = this._make_selection_box(node, col);
+		const label = grp.querySelector('.mm-label');
+		if (label) grp.insertBefore(selBox, label);
+		else grp.appendChild(selBox);
+		return selBox;
+	}
+
+	_refresh_selection_box(node) {
+		if (!node?._el_sel_box) return;
+		const grp = node._el_rect ? node._el_rect.parentNode : null;
+		if (!grp || !node._el_sel_box.parentNode) return;
+		const col = this._colors()[Math.min(this._depth(node), this._colors().length - 1)];
+		node._el_sel_box.parentNode.removeChild(node._el_sel_box);
+		node._el_sel_box = this._make_selection_box(node, col);
+		const anchor = grp.querySelector('.mm-label') || grp.querySelector('.mm-edit-label');
+		if (anchor) grp.insertBefore(node._el_sel_box, anchor);
+		else grp.appendChild(node._el_sel_box);
+	}
+
+	_is_level2_node(node) {
+		return !!node && this._depth(node) === 1;
+	}
+
+	_set_level2_active_state(node, active) {
+		if (!this._is_level2_node(node) || !node?._el_line) return;
+		const col = this._colors()[Math.min(this._depth(node), this._colors().length - 1)];
+		if (active) {
+			node._el_line.setAttribute('stroke-dasharray', '4,3');
+			node._el_line.setAttribute('fill', this._mix_colors(col, '#ffffff', 0.82));
+		} else {
+			node._el_line.removeAttribute('stroke-dasharray');
+			node._el_line.setAttribute('fill', 'transparent');
+		}
+		this._set_node_label_active_state(node, active);
 	}
 
 	_make_selection_box(node, col) {
@@ -660,7 +814,8 @@ class MindMapPage {
 	}
 
 	_get_frame_metrics(node, width = node.w) {
-		if (node.depth === 0) {
+		const depth = this._depth(node);
+		if (depth === 0) {
 			return {
 				x: 0,
 				y: 1,
@@ -669,6 +824,19 @@ class MindMapPage {
 				rx: 18,
 				strokeWidth: 1.5,
 				paddingX: 8,
+				framePad: 0,
+				boxExtra: 0,
+			};
+		}
+		if (depth === 1) {
+			return {
+				x: 0,
+				y: 9,
+				width,
+				height: 26,
+				rx: 13,
+				strokeWidth: 2,
+				paddingX: 12,
 				framePad: 0,
 				boxExtra: 0,
 			};
@@ -687,14 +855,24 @@ class MindMapPage {
 	}
 
 	_get_toggle_button_position(node) {
-		if (!node || node.depth === 0 || !node.children?.length) return null;
+		if (!node || this._depth(node) === 0 || !node.children?.length) return null;
 		const mode = this.field_layout?.get_value() || 'Right';
 		const goLeft = mode === 'Tree' && node._parent && node.x < node._parent.x;
+		const offset = 14;
 		return {
-			cx: goLeft ? node.x - 14 : node.x + node.w + 14,
+			cx: goLeft ? node.x - offset : node.x + node.w + offset,
 			cy: node.y + 12,
 			goLeft,
 			r: 9,
+		};
+	}
+
+	_client_to_canvas_point(clientX, clientY) {
+		const cv = document.getElementById('mm-canvas');
+		const rect = cv.getBoundingClientRect();
+		return {
+			x: (clientX - rect.left - this.vx) / this.vscale,
+			y: (clientY - rect.top - this.vy) / this.vscale,
 		};
 	}
 
@@ -723,7 +901,7 @@ class MindMapPage {
 			const x2 = goLeft ? child.x + child.w : child.x;
 
 			const path = document.createElementNS(ns, 'path');
-			const y1 = node.depth === 0 ? node.y : node.y + 12;
+			const y1 = this._depth(node) === 0 ? node.y : node.y + 12;
 			const y2 = child.y + 12;
 			let d;
 			const curve = Math.max(28, Math.min(58, Math.abs(x2 - x1) * 0.35));
@@ -750,7 +928,8 @@ class MindMapPage {
 	_draw_nodes(g, n) {
 		const ns = 'http://www.w3.org/2000/svg';
 		const colors = this._colors();
-		const col = colors[Math.min(n.depth, colors.length - 1)];
+		const renderDepth = this._depth(n);
+		const col = colors[Math.min(renderDepth, colors.length - 1)];
 		const grp = document.createElementNS(ns, 'g');
 		grp.classList.add('mm-node');
 		grp.dataset.id = n._id;
@@ -759,7 +938,7 @@ class MindMapPage {
 		const isMultiSelected = this._selected_nodes.has(n._id);
 		const mode = this.field_layout?.get_value() || 'Right';
 
-		if (n.depth === 0) {
+		if (renderDepth === 0) {
 			grp.setAttribute('transform', `translate(${n.x},${n.y - 18})`);
 
 			if (isMultiSelected) {
@@ -780,7 +959,7 @@ class MindMapPage {
 			t.setAttribute('x', n.w / 2); t.setAttribute('y', 18);
 			t.setAttribute('text-anchor', 'middle');
 			t.setAttribute('dominant-baseline', 'central');
-			t.setAttribute('fill', '#fff');
+			t.setAttribute('fill', this._get_node_text_color(n, isMultiSelected || (this.selected && this.selected._id === n._id)));
 			t.setAttribute('font-weight', 'bold');
 			t.style.fontSize = '16px';
 			t.style.fontFamily = this._get_font_family();
@@ -791,41 +970,66 @@ class MindMapPage {
 			const frame = this._get_frame_metrics(n);
 
 			const hit = document.createElementNS(ns, 'rect');
-			hit.setAttribute('width', n.w); hit.setAttribute('height', 30);
-			hit.setAttribute('fill', 'transparent');
+			hit.setAttribute('x', frame.x);
+			hit.setAttribute('y', frame.y);
+			hit.setAttribute('width', frame.width);
+			hit.setAttribute('height', frame.height);
+			hit.setAttribute('rx', frame.rx);
+			hit.setAttribute('fill', 'rgba(0,0,0,0.001)');
+			hit.style.pointerEvents = 'all';
 			n._el_rect = hit;
 			grp.appendChild(hit);
 
-			if (isMultiSelected) {
+			if (isMultiSelected && !this._is_level2_node(n)) {
 				const selBox = this._make_selection_box(n, col);
 				n._el_sel_box = selBox;
 				grp.appendChild(selBox);
 			}
 
-			const l = document.createElementNS(ns, 'line');
-			l.setAttribute('x1', 0); l.setAttribute('y1', 22);
-			l.setAttribute('x2', n.w); l.setAttribute('y2', 22);
-			l.setAttribute('stroke', col); l.setAttribute('stroke-width', '2.5');
-			l.setAttribute('stroke-linecap', 'square');
-			l.setAttribute('opacity', '1');
-			n._el_line = l;
-			grp.appendChild(l);
+			if (this._is_level2_node(n)) {
+				const pill = document.createElementNS(ns, 'rect');
+				pill.setAttribute('x', 0);
+				pill.setAttribute('y', 9);
+				pill.setAttribute('width', n.w);
+				pill.setAttribute('height', 26);
+				pill.setAttribute('rx', 13);
+				pill.setAttribute('fill', 'transparent');
+				pill.setAttribute('stroke', col);
+				pill.setAttribute('stroke-width', '2');
+				pill.setAttribute('opacity', '1');
+				pill.style.pointerEvents = 'none';
+				n._el_line = pill;
+				this._set_level2_active_state(n, isMultiSelected || (this.selected && this.selected._id === n._id));
+				grp.appendChild(pill);
+			} else {
+				const l = document.createElementNS(ns, 'line');
+				l.setAttribute('x1', 0); l.setAttribute('y1', 22);
+				l.setAttribute('x2', n.w); l.setAttribute('y2', 22);
+				l.setAttribute('stroke', col); l.setAttribute('stroke-width', '2.5');
+				l.setAttribute('stroke-linecap', 'square');
+				l.setAttribute('opacity', '1');
+				l.style.pointerEvents = 'none';
+				n._el_line = l;
+				grp.appendChild(l);
+			}
 
 			if (n.children.length > 0 && !n.collapsed) {
 				const mode = this.field_layout?.get_value() || 'Right';
 				const goLeft = mode === 'Tree' && n._parent && n.x < n._parent.x;
-				const bridge = document.createElementNS(ns, 'line');
-				const bridgeStart = goLeft ? 0.5 : n.w - 0.5;
-				const bridgeEnd = goLeft ? -14 + 9 + 0.5 : n.w + 14 - 9 - 0.5;
-				bridge.setAttribute('x1', bridgeStart);
-				bridge.setAttribute('y1', 22);
-				bridge.setAttribute('x2', bridgeEnd);
-				bridge.setAttribute('y2', 22);
-				bridge.setAttribute('stroke', col);
-				bridge.setAttribute('stroke-width', '2.5');
-				bridge.setAttribute('stroke-linecap', 'square');
-				bridge.setAttribute('opacity', '1');
-				grp.appendChild(bridge);
+				if (!this._is_level2_node(n)) {
+					const bridge = document.createElementNS(ns, 'line');
+					const bridgeStart = goLeft ? 0.5 : n.w - 0.5;
+					const bridgeEnd = goLeft ? -14 + 9 + 0.5 : n.w + 14 - 9 - 0.5;
+					bridge.setAttribute('x1', bridgeStart);
+					bridge.setAttribute('y1', 22);
+					bridge.setAttribute('x2', bridgeEnd);
+					bridge.setAttribute('y2', 22);
+					bridge.setAttribute('stroke', col);
+					bridge.setAttribute('stroke-width', '2.5');
+					bridge.setAttribute('stroke-linecap', 'square');
+					bridge.setAttribute('opacity', '1');
+					grp.appendChild(bridge);
+				}
 			}
 
 			const fo = document.createElementNS(ns, 'foreignObject');
@@ -843,7 +1047,8 @@ class MindMapPage {
 				fontSize: '14px',
 				fontWeight: '500',
 				fontFamily: this._get_font_family(),
-				color: 'var(--text-color)',
+				color: this._get_node_text_color(n, isMultiSelected || (this.selected && this.selected._id === n._id)),
+				webkitTextFillColor: this._get_node_text_color(n, isMultiSelected || (this.selected && this.selected._id === n._id)),
 				display: 'flex',
 				alignItems: 'center',
 				justifyContent: 'center',
@@ -863,19 +1068,20 @@ class MindMapPage {
 		}
 
 		// ── Collapse/Expand button ──────────────────────────────────────────
-		if (n.depth > 0 && n.children.length > 0) {
+		if (n.children.length > 0) {
 			const btn = document.createElementNS(ns, 'g');
 			btn.classList.add('mm-btn');
 
 			// Determine which side children are on
 			let bx;
-			if (mode === 'Tree' && n.depth > 0) {
+			const buttonOffset = 14;
+			if (mode === 'Tree' && renderDepth > 0) {
 				const goLeft = !!(n._parent && n.x < n._parent.x);
-				bx = goLeft ? -14 : n.w + 14;
+				bx = goLeft ? -buttonOffset : n.w + buttonOffset;
 			} else {
-				bx = n.w + 14; // root always right; Right layout always right
+				bx = n.w + buttonOffset; // root always right; Right layout always right
 			}
-			const by = n.depth === 0 ? 18 : 22;
+			const by = renderDepth === 0 ? 18 : 22;
 
 			btn.innerHTML = `
 				<circle cx="${bx}" cy="${by}" r="9" fill="var(--card-bg)" stroke="${col}" stroke-width="2" opacity="0.95"/>
@@ -884,18 +1090,19 @@ class MindMapPage {
 
 			btn.onclick = (e) => {
 				e.stopPropagation();
+				const wasCollapsed = !!n.collapsed;
 				n.collapsed = !n.collapsed;
 				this._push_history();
 				this.tree = this._build(this._serialize(this.tree), null);
 				this._re_render();
 				this._mark_dirty();
-				this._scroll_to(n);
+				const updatedNode = this._find_by_id(this.tree, n._id);
+				if (wasCollapsed && updatedNode) {
+					this._fit_subtree_view(updatedNode);
+				}
 			};
 			grp.appendChild(btn);
 		}
-
-		// ── Click / double-click ────────────────────────────────────────────
-		let clickTimer = null;
 
 		grp.addEventListener('click', (e) => {
 			e.stopPropagation();
@@ -903,21 +1110,16 @@ class MindMapPage {
 				this._drag_click_suppressed = false;
 				return;
 			}
-			if (clickTimer) return;
-			clickTimer = setTimeout(() => {
-				clickTimer = null;
-				if (e.shiftKey || e.ctrlKey || e.metaKey) {
-					this._toggle_multi_select(n);
-				} else {
-					this._clear_multi_select();
-					this._select(n);
-				}
-			}, 200);
+			if (e.shiftKey || e.ctrlKey || e.metaKey) {
+				this._toggle_multi_select(n);
+			} else {
+				this._clear_multi_select();
+				this._select(n);
+			}
 		});
 
 		grp.addEventListener('dblclick', (e) => {
 			e.stopPropagation();
-			if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
 			this._start_rename(n);
 		});
 
@@ -940,6 +1142,7 @@ class MindMapPage {
 		grp.addEventListener('mousedown', (e) => {
 			if (e.button !== 0 || this._is_editing()) return;
 			if (e.target.closest('.mm-btn')) return;
+			if (this._selected_nodes.size > 1) return;
 			e.stopPropagation();
 			e.preventDefault();
 			this._hide_ctx();
@@ -1130,13 +1333,20 @@ class MindMapPage {
 
 	_highlight(node, on) {
 		if (!node._el_rect) return;
-		const col = this._colors()[Math.min(node.depth, this._colors().length - 1)];
+		if (this._is_level2_node(node)) {
+			if (node._el_sel_box && node._el_sel_box.parentNode) {
+				node._el_sel_box.parentNode.removeChild(node._el_sel_box);
+				node._el_sel_box = null;
+			}
+			this._set_level2_active_state(node, on || this._selected_nodes.has(node._id));
+			return;
+		}
+		this._set_node_label_active_state(node, on);
+		const col = this._colors()[Math.min(this._depth(node), this._colors().length - 1)];
 		if (on) {
 			if (!node._el_sel_box) {
 				const grp = node._el_rect.parentNode;
-				const selBox = this._make_selection_box(node, col);
-				node._el_sel_box = selBox;
-				grp.appendChild(selBox);
+				node._el_sel_box = this._insert_selection_box(grp, node, col);
 			}
 		} else if (node._el_sel_box && node._el_sel_box.parentNode) {
 			node._el_sel_box.parentNode.removeChild(node._el_sel_box);
@@ -1155,13 +1365,20 @@ class MindMapPage {
 	}
 
 	_highlight_multi(node, on) {
-		const col = this._colors()[Math.min(node.depth, this._colors().length - 1)];
+		if (this._is_level2_node(node)) {
+			if (node._el_sel_box && node._el_sel_box.parentNode) {
+				node._el_sel_box.parentNode.removeChild(node._el_sel_box);
+				node._el_sel_box = null;
+			}
+			this._set_level2_active_state(node, on || (this.selected && this.selected._id === node._id));
+			return;
+		}
+		this._set_node_label_active_state(node, on || (this.selected && this.selected._id === node._id));
+		const col = this._colors()[Math.min(this._depth(node), this._colors().length - 1)];
 		if (on && !node._el_sel_box) {
 			const grp = node._el_rect ? node._el_rect.parentNode : null;
 			if (grp) {
-				const selBox = this._make_selection_box(node, col);
-				node._el_sel_box = selBox;
-				grp.appendChild(selBox);
+				node._el_sel_box = this._insert_selection_box(grp, node, col);
 			}
 		} else if (!on && node._el_sel_box && node._el_sel_box.parentNode) {
 			node._el_sel_box.parentNode.removeChild(node._el_sel_box);
@@ -1186,9 +1403,11 @@ class MindMapPage {
 		const lr = this._lasso_rect;
 		if (lr.w < 5 && lr.h < 5) return;
 		const x0 = lr.x, y0 = lr.y, x1 = lr.x + lr.w, y1 = lr.y + lr.h;
+		const renderRoot = this._get_render_root();
 		const check = (n) => {
-			const nx = n.x, ny = n.depth === 0 ? n.y - 18 : n.y - 10;
-			const nw = n.w, nh = n.depth === 0 ? 36 : 30;
+			const renderDepth = this._depth(n);
+			const nx = n.x, ny = renderDepth === 0 ? n.y - 18 : n.y - 10;
+			const nw = n.w, nh = renderDepth === 0 ? 36 : 30;
 			if (nx < x1 && nx + nw > x0 && ny < y1 && ny + nh > y0) {
 				if (!this._selected_nodes.has(n._id)) {
 					this._selected_nodes.add(n._id);
@@ -1197,10 +1416,10 @@ class MindMapPage {
 			}
 			if (!n.collapsed) n.children.forEach(c => check(c));
 		};
-		check(this.tree);
+		check(renderRoot);
 		if (this._selected_nodes.size === 1) {
 			const id = [...this._selected_nodes][0];
-			const n = this._find_by_id(this.tree, id);
+			const n = this._find_by_id(renderRoot, id);
 			if (n) this._select(n);
 		}
 	}
@@ -1227,20 +1446,30 @@ class MindMapPage {
 	// ── Context Menu ───────────────────────────────────────────────────────────
 
 	_show_ctx(node, x, y) {
-		this._select(node);
+		const isAlreadySelected = !!(this.selected && this.selected._id === node._id);
+		const isInMultiSelection = this._selected_nodes.has(node._id);
+		const multiCount = this._selected_nodes.size;
+		const isBranchFocused = !!(this._focus_root_id && this._get_render_root() !== this.tree);
+		const isMainRenderNode = this._depth(node) === 0;
+		if (!isAlreadySelected && !isInMultiSelection) {
+			this._clear_multi_select();
+			this._select(node);
+		}
 		const ctx = document.getElementById('mm-ctx');
 		const items = [
 			{ icon: '＋', key: 'child', label: 'Child' },
-			{ icon: '↳', key: 'sib', label: 'Sibling' },
-			{ icon: '↑', key: 'parent', label: 'Parent' },
+			{ icon: '↳', key: 'sib', label: 'Sibling', disabled: multiCount > 1 },
+			{ icon: '↑', key: 'parent', label: 'Parent', disabled: multiCount > 1 },
 			{ icon: '✎', key: 'edit', label: 'Edit' },
 			{ icon: '✕', key: 'del', label: 'Delete', danger: true }
 		];
+		if (!isBranchFocused && !isMainRenderNode) items.splice(3, 0, { icon: '◎', key: 'focus', label: 'Focus Branch' });
+		if (isBranchFocused) items.splice(4, 0, { icon: '↺', key: 'full_map', label: 'Full Map' });
 		ctx.innerHTML =
 			`<div style="padding:4px 0;min-width:160px;background:var(--card-bg,#1f1f1f);color:var(--text-color,#f5f5f5)">` +
 			items.map(it => `
 				<div data-key="${it.key}" title="${it.label}"
-					style="display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;color:${it.danger ? 'var(--red-500,#ff5c5c)' : 'var(--text-color,#f5f5f5)'};font-weight:500">
+					style="display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:${it.disabled ? 'not-allowed' : 'pointer'};opacity:${it.disabled ? '0.45' : '1'};color:${it.danger ? 'var(--red-500,#ff5c5c)' : 'var(--text-color,#f5f5f5)'};font-weight:500">
 					<span style="width:16px;text-align:center">${it.icon}</span>
 					<span>${it.label}</span>
 				</div>
@@ -1250,14 +1479,18 @@ class MindMapPage {
 		ctx.style.left = x + 'px';
 		ctx.style.top = y + 'px';
 		ctx.querySelectorAll('[data-key]').forEach(el => {
+			const item = items.find(it => it.key === el.dataset.key);
 			el.onmouseenter = () => { el.style.background = 'rgba(127,127,127,0.18)'; };
 			el.onmouseleave = () => { el.style.background = 'transparent'; };
 			el.onclick = () => {
+				if (item?.disabled) return;
 				this._hide_ctx();
 				const k = el.dataset.key;
 				if (k === 'child') this._add_child(node);
 				else if (k === 'sib') this._add_sibling(node);
 				else if (k === 'parent') this._add_parent(node);
+				else if (k === 'focus') this._set_focus_branch(node);
+				else if (k === 'full_map') this._clear_focus_branch();
 				else if (k === 'edit') this._start_rename(node);
 				else if (k === 'del') this._delete_node(node);
 			};
@@ -1275,19 +1508,22 @@ class MindMapPage {
 
 		const ns = 'http://www.w3.org/2000/svg';
 		const grp = node._el_rect.parentNode;
-		const col = this._colors()[Math.min(node.depth, this._colors().length - 1)];
+		const renderDepth = this._depth(node);
+		const col = this._colors()[Math.min(renderDepth, this._colors().length - 1)];
 		const mode = this.field_layout?.get_value() || 'Right';
-		const isLeftTreeNode = mode === 'Tree' && node.depth > 0 && node._parent && node.x < node._parent.x;
+		const isLeftTreeNode = mode === 'Tree' && renderDepth > 0 && node._parent && node.x < node._parent.x;
 		const wasSelected = !!(this.selected && this.selected._id === node._id);
 		const wasMultiSelected = this._selected_nodes.has(node._id);
+		const useLiveVisibleLabel = false;
 		let createdEditFrame = false;
-		if (!node._el_sel_box) {
-			node._el_sel_box = this._make_selection_box(node, col);
-			grp.appendChild(node._el_sel_box);
+		if (this._is_level2_node(node)) {
+			this._set_level2_active_state(node, true);
+		} else if (!node._el_sel_box) {
+			node._el_sel_box = this._insert_selection_box(grp, node, col);
 			createdEditFrame = true;
 		}
 
-		// Hide existing SVG text
+		// Hide the existing label and show the editable text on the top layer.
 		const oldText = grp.querySelector('.mm-label');
 		if (oldText) oldText.style.display = 'none';
 
@@ -1302,27 +1538,40 @@ class MindMapPage {
 		const framePad = frame.framePad;
 		const boxExtra = frame.boxExtra;
 
-		const calcW = (text) => this._get_node_width(text, node.depth);
+		const calcW = (text) => this._get_node_width(text, renderDepth);
 		let foW = calcW(initText);
 		let frameW = foW + boxExtra;
 
 		const fo = document.createElementNS(ns, 'foreignObject');
-		fo.setAttribute('x', node.depth === 0 ? 0 : (isLeftTreeNode ? (node.w - foW - framePad) : -framePad));
+		fo.classList.add('mm-edit-label');
+		fo.setAttribute('x', renderDepth === 0 ? 0 : (isLeftTreeNode ? (node.w - foW - framePad) : -framePad));
 		fo.setAttribute('y', frame.y);
 		fo.setAttribute('width', frameW);
 		fo.setAttribute('height', frame.height);
 		fo.style.overflow = 'visible';
+		fo.style.pointerEvents = 'none';
 
 		const div = document.createElement('div');
-		div.contentEditable = true;
+		div.contentEditable = 'plaintext-only';
 		div.spellcheck = false;
 		div.innerText = initText;
+		const applyEditTextColor = () => {
+			const activeColor = this._get_node_text_color(node, true);
+			const targets = [div, ...div.querySelectorAll('*')];
+			targets.forEach((el) => {
+				el.style.setProperty('color', activeColor, 'important');
+				el.style.setProperty('-webkit-text-fill-color', activeColor, 'important');
+				el.style.setProperty('caret-color', activeColor, 'important');
+				el.style.setProperty('text-shadow', `0 0 0 ${activeColor}`, 'important');
+				el.style.setProperty('background', 'transparent', 'important');
+				el.style.setProperty('opacity', '1', 'important');
+			});
+		};
 		Object.assign(div.style, {
 			outline: 'none',
-			fontSize: node.depth === 0 ? '16px' : '14px',
-			fontWeight: node.depth === 0 ? 'bold' : '500',
+			fontSize: renderDepth === 0 ? '16px' : '14px',
+			fontWeight: renderDepth === 0 ? 'bold' : '500',
 			fontFamily: this._get_font_family(),
-			color: node.depth === 0 ? '#fff' : 'var(--text-color)',
 			display: 'flex',
 			alignItems: 'center',
 			justifyContent: 'center',
@@ -1340,7 +1589,10 @@ class MindMapPage {
 			cursor: 'text',
 			position: 'relative',
 			top: this._get_label_text_nudge(node),
+			opacity: '1',
 		});
+		applyEditTextColor();
+		div.style.pointerEvents = 'auto';
 		div.addEventListener('mousedown', (e) => e.stopPropagation());
 		div.addEventListener('click', (e) => e.stopPropagation());
 		div.addEventListener('dblclick', (e) => e.stopPropagation());
@@ -1358,6 +1610,7 @@ class MindMapPage {
 		sel.addRange(range);
 
 		const update = () => {
+			applyEditTextColor();
 			const text = div.innerText || '';
 			const w = calcW(text);
 			const prevW = node.w;
@@ -1370,8 +1623,13 @@ class MindMapPage {
 			}
 			fo.setAttribute('width', nextFrameW);
 			div.style.width = nextFrameW + 'px';
-			// Sync SVG underline width using the updated node width/position
-			if (node._el_line) {
+			if (renderDepth === 0 && node._el_rect) {
+				node._el_rect.setAttribute('width', w);
+			}
+			// Sync SVG node shape width using the updated node width/position
+			if (node._el_line && this._is_level2_node(node)) {
+				node._el_line.setAttribute('width', w);
+			} else if (node._el_line) {
 				if (isLeftTreeNode) {
 					node._el_line.setAttribute('x1', node.w - w);
 					node._el_line.setAttribute('x2', node.w);
@@ -1383,6 +1641,10 @@ class MindMapPage {
 		};
 
 		const restoreEditState = () => {
+			if (this._is_level2_node(node)) {
+				this._set_level2_active_state(node, wasSelected || wasMultiSelected);
+				return;
+			}
 			if (createdEditFrame && !wasSelected && !wasMultiSelected && node._el_sel_box && node._el_sel_box.parentNode) {
 				node._el_sel_box.parentNode.removeChild(node._el_sel_box);
 				node._el_sel_box = null;
@@ -1394,7 +1656,12 @@ class MindMapPage {
 			fo.remove();
 			if (oldText) oldText.style.display = '';
 			// Restore underline to final width
-			if (node._el_line) {
+			if (renderDepth === 0 && node._el_rect) {
+				node._el_rect.setAttribute('width', node.w);
+			}
+			if (node._el_line && this._is_level2_node(node)) {
+				node._el_line.setAttribute('width', node.w);
+			} else if (node._el_line) {
 				node._el_line.setAttribute('x1', 0);
 				node._el_line.setAttribute('x2', node.w);
 			}
@@ -1405,8 +1672,13 @@ class MindMapPage {
 				} else {
 					node.label = _savedLabel;
 					node.w = calcW(_savedLabel);
-					this._set_label_text(oldText, _savedLabel);
-					if (node._el_line) {
+					if (oldText) this._set_label_text(oldText, _savedLabel);
+					if (renderDepth === 0 && node._el_rect) {
+						node._el_rect.setAttribute('width', node.w);
+					}
+					if (node._el_line && this._is_level2_node(node)) {
+						node._el_line.setAttribute('width', node.w);
+					} else if (node._el_line) {
 						node._el_line.setAttribute('x1', 0);
 						node._el_line.setAttribute('x2', node.w);
 					}
@@ -1430,7 +1702,26 @@ class MindMapPage {
 		const onDocMouseDown = (e) => {
 			if (!div.isConnected) return;
 			if (div.contains(e.target)) return;
+			const targetNodeId = e.target?.closest?.('.mm-node')?.dataset?.id;
+			const isModifier = e.shiftKey || e.ctrlKey || e.metaKey;
+			if (targetNodeId && targetNodeId !== node._id) {
+				this._clear_multi_select();
+				this._deselect();
+				this._drag_click_suppressed = true;
+			}
 			saveOnce();
+			if (targetNodeId && targetNodeId !== node._id) {
+				setTimeout(() => {
+					const targetNode = this._find_by_id(this.tree, targetNodeId);
+					if (!targetNode) return;
+					if (isModifier) {
+						this._toggle_multi_select(targetNode);
+					} else {
+						this._clear_multi_select();
+						this._select(targetNode);
+					}
+				}, 0);
+			}
 		};
 		const hasSelectionInside = () => {
 			const sel = window.getSelection();
@@ -1466,8 +1757,15 @@ class MindMapPage {
 					this._set_label_text(oldText, _savedLabel);
 				}
 				if (node._el_line) {
-					node._el_line.setAttribute('x1', 0);
-					node._el_line.setAttribute('x2', node.w);
+					if (this._is_level2_node(node)) {
+						node._el_line.setAttribute('width', node.w);
+					} else {
+						node._el_line.setAttribute('x1', 0);
+						node._el_line.setAttribute('x2', node.w);
+					}
+				}
+				if (renderDepth === 0 && node._el_rect) {
+					node._el_rect.setAttribute('width', node.w);
 				}
 				node.label = _savedLabel;
 				restoreEditState();
@@ -1584,36 +1882,102 @@ class MindMapPage {
 			const f = this._find_by_id(this.tree, node._id);
 			if (!f) return;
 			const cv = document.getElementById('mm-canvas');
-			const tx = cv.clientWidth / 2 - f.x * this.vscale;
-			const ty = cv.clientHeight / 2 - f.y * this.vscale;
-			const sx = this.vx, sy = this.vy;
-			const dur = 400, start = Date.now();
-			const anim = () => {
-				const p = Math.min((Date.now() - start) / dur, 1);
-				this.vx = sx + (tx - sx) * p;
-				this.vy = sy + (ty - sy) * p;
-				this._apply_transform();
-				if (p < 1) requestAnimationFrame(anim);
-			};
-			anim();
+			this._animate_viewport({
+				vx: cv.clientWidth / 2 - f.x * this.vscale,
+				vy: cv.clientHeight / 2 - f.y * this.vscale,
+				vscale: this.vscale,
+			}, { duration: 260 });
 		}, 50);
 	}
 
-	_fit_view(root) {
+	_fit_view(root, opts = {}) {
 		const g = document.getElementById('mm-g');
 		const bbox = g.getBBox();
 		const cv = document.getElementById('mm-canvas');
 		if (bbox.width === 0) return;
-		this.vscale = Math.min(1.8, Math.min((cv.clientWidth - 60) / bbox.width, (cv.clientHeight - 60) / bbox.height));
-		this.vx = cv.clientWidth / 2 - (bbox.x + bbox.width / 2) * this.vscale;
-		this.vy = cv.clientHeight / 2 - (bbox.y + bbox.height / 2) * this.vscale;
-		this._apply_transform();
+		const vscale = Math.min(1.8, Math.min((cv.clientWidth - 60) / bbox.width, (cv.clientHeight - 60) / bbox.height));
+		this._animate_viewport({
+			vx: cv.clientWidth / 2 - (bbox.x + bbox.width / 2) * vscale,
+			vy: cv.clientHeight / 2 - (bbox.y + bbox.height / 2) * vscale,
+			vscale,
+		}, opts);
+	}
+
+	_fit_subtree_view(node) {
+		setTimeout(() => {
+			const root = this._get_render_root();
+			const target = root ? this._find_by_id(root, node._id) : null;
+			if (!target) return;
+			const boxes = [];
+			const walk = (n) => {
+				const depth = this._depth(n);
+				const x = n.x;
+				const y = depth === 0 ? n.y - 18 : n.y - 10;
+				const w = n.w + ((depth > 0 && n.children?.length) ? 26 : 0);
+				const h = depth === 0 ? 36 : 30;
+				boxes.push({ x, y, w, h });
+				if (!n.collapsed) (n.children || []).forEach(walk);
+			};
+			walk(target);
+			if (!boxes.length) {
+				this._scroll_to(target);
+				return;
+			}
+			let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+			boxes.forEach((box) => {
+				minX = Math.min(minX, box.x);
+				minY = Math.min(minY, box.y);
+				maxX = Math.max(maxX, box.x + box.w);
+				maxY = Math.max(maxY, box.y + box.h);
+			});
+			const targetDepth = this._depth(target);
+			const parentPad = targetDepth > 0 ? 120 : 80;
+			minX = Math.min(minX, target.x - parentPad);
+			maxX = Math.max(maxX, target.x + target.w + parentPad);
+			minY -= 70;
+			maxY += 70;
+			const cv = document.getElementById('mm-canvas');
+			const pad = 110;
+			const width = Math.max(1, maxX - minX + pad * 2);
+			const height = Math.max(1, maxY - minY + pad * 2);
+			const vscale = Math.min(1.15, Math.min(cv.clientWidth / width, cv.clientHeight / height));
+			this._animate_viewport({
+				vx: cv.clientWidth / 2 - ((minX + maxX) / 2) * vscale,
+				vy: cv.clientHeight / 2 - ((minY + maxY) / 2) * vscale,
+				vscale,
+			}, { duration: 280 });
+		}, 50);
+	}
+
+	_set_focus_branch(node) {
+		if (!node) return;
+		if (this._focus_root_id === node._id) return;
+		if (this._focus_root_id) return;
+		this._focus_root_id = node._id;
+		this._clear_multi_select();
+		this._select(node);
+		this._re_render();
+		this._fit_view(this._get_render_root(), { duration: 280 });
+	}
+
+	_clear_focus_branch() {
+		if (!this._focus_root_id) return;
+		this._focus_root_id = null;
+		this._re_render();
+		this._fit_view(this.tree, { duration: 280 });
 	}
 
 	// ── Save / Serialize ───────────────────────────────────────────────────────
 
 	_save() {
 		if (!this.doc) return;
+		if (!this._is_dirty) return;
+		if (this._save_in_flight) {
+			this._queued_save = true;
+			return;
+		}
+		this._save_in_flight = true;
+		clearTimeout(this._autosave_timer);
 		this._set_save_status('Saving...');
 		frappe.call({
 			method: 'frappe.client.set_value',
@@ -1626,10 +1990,25 @@ class MindMapPage {
 					description: this.doc.description || ''
 				}
 			},
-			callback: () => {
+			callback: (r) => {
+				this._save_in_flight = false;
+				this._is_dirty = false;
 				this.doc.theme = this.field_theme?.get_value() || 'Auto';
-				this._set_save_status('✓ Saved');
+				if (r?.message) {
+					if (r.message.modified) this.doc.modified = r.message.modified;
+					if (r.message.name) this.doc.name = r.message.name;
+				}
+				this._set_save_status('Saved');
 				this._update_footer_meta();
+				if (this._queued_save) {
+					this._queued_save = false;
+					this._save();
+				}
+			},
+			error: () => {
+				this._save_in_flight = false;
+				this._is_dirty = false;
+				this._set_save_status('Unsaved');
 			}
 		});
 	}
@@ -1654,16 +2033,32 @@ class MindMapPage {
 		return JSON.stringify(this._serialize(root), null, 2);
 	}
 
-	_set_save_status(t) {
+	_set_save_status(t, opts = {}) {
 		const s = document.getElementById('mm-save-status');
 		if (s) s.textContent = t;
+		const silent = !!opts.silent;
+		if (t === 'Saved') {
+			this.page.clear_indicator();
+			if (!silent) frappe.show_alert({ message: __('Saved'), indicator: 'green' }, 3);
+		} else if (t === 'Unsaved') {
+			this.page.set_indicator(__('Not Saved'), 'orange');
+		}
+	}
+
+	_update_save_button_label(statusText = '') {
+		const btn = this.page?.btn_primary;
+		if (!btn || !btn.length) return;
+		btn.text(__('Save'));
 	}
 
 	_mark_dirty() {
-		this._set_save_status('● Unsaved');
+		if (this._suppress_dirty || this._loading_doc) return;
+		this._is_dirty = true;
+		this._set_save_status('Unsaved');
 		clearTimeout(this._autosave_timer);
 		this._autosave_timer = setTimeout(() => this._save(), 5000);
 	}
+
 
 	_find_by_id(n, id) {
 		if (n._id === id) return n;
@@ -1681,23 +2076,38 @@ class MindMapPage {
 	_update_node_group_transform(node) {
 		const grp = this._get_node_group(node);
 		if (!grp) return;
-		grp.setAttribute('transform', `translate(${node.x},${node.depth === 0 ? node.y - 18 : node.y - 10})`);
+		grp.setAttribute('transform', `translate(${node.x},${this._depth(node) === 0 ? node.y - 18 : node.y - 10})`);
 	}
 
 	_update_node_controls(node) {
 		const grp = this._get_node_group(node);
-		if (!grp || !node.children.length || node.depth === 0) return;
+		const renderDepth = this._depth(node);
+		if (!grp || !node.children.length || renderDepth === 0) return;
 		const btn = grp.querySelector('.mm-btn');
 		if (!btn) return;
 		const mode = this.field_layout?.get_value() || 'Right';
-		const col = this._colors()[Math.min(node.depth, this._colors().length - 1)];
+		const col = this._colors()[Math.min(renderDepth, this._colors().length - 1)];
 		const goLeft = mode === 'Tree' && node._parent && node.x < node._parent.x;
-		const bx = goLeft ? -14 : node.w + 14;
+		const buttonOffset = 14;
+		const bx = goLeft ? -buttonOffset : node.w + buttonOffset;
 		const by = 22;
 		btn.innerHTML = `
 			<circle cx="${bx}" cy="${by}" r="9" fill="var(--card-bg)" stroke="${col}" stroke-width="2" opacity="0.95"/>
 			<text x="${bx}" y="${by}" text-anchor="middle" dominant-baseline="central" font-size="13" fill="${col}" font-weight="bold">${node.collapsed ? '+' : '−'}</text>
 		`;
+	}
+
+	_shift_live_right_side_from_root(root, dx) {
+		if (!root || !root.children?.length || !dx) return;
+		const mode = this.field_layout?.get_value() || 'Right';
+		root.children.forEach(child => {
+			const isRightSide = mode === 'Right' || child.x >= root.x;
+			if (!isRightSide) return;
+			child.x += dx;
+			this._update_node_group_transform(child);
+			this._update_node_controls(child);
+			this._shift_subtree_x(child, dx);
+		});
 	}
 
 	_shift_subtree_x(node, dx) {
@@ -1715,10 +2125,12 @@ class MindMapPage {
 		const g = document.getElementById('mm-g');
 		const defs = document.getElementById('mm-defs');
 		if (!g || !defs) return;
+		const renderRoot = this._get_render_root();
+		if (!renderRoot) return;
 		defs.innerHTML = '';
 		[...g.querySelectorAll('path')].forEach(p => p.remove());
 		const temp = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-		this._draw_edges(temp, this.tree);
+		this._draw_edges(temp, renderRoot);
 		const firstNode = g.querySelector('.mm-node');
 		[...temp.childNodes].forEach(child => {
 			if (firstNode) g.insertBefore(child, firstNode);
@@ -1728,25 +2140,30 @@ class MindMapPage {
 
 	_live_edit_relayout(node, prevW, nextW, isLeftTreeNode, fo, framePad) {
 		const delta = nextW - prevW;
+		const renderDepth = this._depth(node);
 		if (!delta) return;
 		node.w = nextW;
 		if (isLeftTreeNode) node.x -= delta;
+		if (renderDepth === 0 && node._el_rect) {
+			node._el_rect.setAttribute('width', nextW);
+		}
 		this._update_node_group_transform(node);
 		this._update_node_controls(node);
-		const descendantShift = isLeftTreeNode ? -delta : delta;
-		this._shift_subtree_x(node, descendantShift);
+		if (renderDepth === 0) {
+			this._shift_live_right_side_from_root(node, delta);
+		} else {
+			const descendantShift = isLeftTreeNode ? -delta : delta;
+			this._shift_subtree_x(node, descendantShift);
+		}
 		this._redraw_edges_only();
-		if (fo && node.depth > 0) {
+		if (fo && renderDepth > 0) {
 			fo.setAttribute('x', isLeftTreeNode ? (node.w - nextW - framePad) : -framePad);
 		}
+		if (this._is_level2_node(node) && node._el_line) {
+			node._el_line.setAttribute('width', nextW);
+		}
 		if (node._el_sel_box) {
-			const col = this._colors()[Math.min(node.depth, this._colors().length - 1)];
-			const grp = node._el_rect ? node._el_rect.parentNode : null;
-			if (grp && node._el_sel_box.parentNode) {
-				node._el_sel_box.parentNode.removeChild(node._el_sel_box);
-				node._el_sel_box = this._make_selection_box(node, col);
-				grp.appendChild(node._el_sel_box);
-			}
+			this._refresh_selection_box(node);
 		}
 	}
 
@@ -1795,6 +2212,95 @@ class MindMapPage {
 		btn.setAttribute('title', `Theme: ${theme}`);
 	}
 
+	_update_layout_button() {
+		const btn = document.getElementById('mm-layout-btn');
+		if (!btn) return;
+		const layout = this.field_layout?.get_value() || 'Right';
+		btn.textContent = layout === 'Tree' ? '⑂' : '⇢';
+		btn.setAttribute('title', `Layout: ${layout}`);
+	}
+
+	_update_focus_button() {
+		return;
+	}
+
+	_prepare_export_group(g) {
+		const cloneG = g.cloneNode(true);
+		const renderRoot = this._get_render_root() || this.tree;
+		cloneG.querySelectorAll('.mm-btn').forEach(b => b.remove());
+		cloneG.querySelectorAll('.mm-node').forEach(grp => {
+			const node = this._find_by_id(renderRoot, grp.dataset.id);
+			if (!node || node.depth === 0 || this._is_level2_node(node) || !node.children?.length || node.collapsed) return;
+			const lines = grp.querySelectorAll('line');
+			if (lines.length > 1) lines[1].remove();
+		});
+		[...cloneG.querySelectorAll('path')].forEach(p => p.remove());
+		const edgeLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+		this._draw_export_edges(edgeLayer, renderRoot);
+		const firstNode = cloneG.querySelector('.mm-node');
+		[...edgeLayer.childNodes].forEach(child => {
+			if (firstNode) cloneG.insertBefore(child, firstNode);
+			else cloneG.appendChild(child);
+		});
+		cloneG.querySelectorAll('.mm-label').forEach(label => {
+			if (label.tagName.toLowerCase() !== 'foreignobject') return;
+			const grp = label.closest('.mm-node');
+			const node = grp ? this._find_by_id(renderRoot, grp.dataset.id) : null;
+			const renderDepth = this._depth(node);
+			const textValue = label.textContent || node?.label || '';
+			const x = parseFloat(label.getAttribute('x') || '0');
+			const y = parseFloat(label.getAttribute('y') || '0');
+			const width = parseFloat(label.getAttribute('width') || '0');
+			const height = parseFloat(label.getAttribute('height') || '0');
+			const ns = 'http://www.w3.org/2000/svg';
+			const text = document.createElementNS(ns, 'text');
+			text.textContent = textValue;
+			text.setAttribute('x', String(x + width / 2));
+			text.setAttribute('y', String(y + height / 2));
+			text.setAttribute('text-anchor', 'middle');
+			text.setAttribute('dominant-baseline', 'central');
+			text.setAttribute('font-size', renderDepth === 0 ? '16' : '14');
+			text.setAttribute('font-weight', renderDepth === 0 ? '700' : '500');
+			text.setAttribute('font-family', this._get_font_family());
+			text.setAttribute('font-style', 'normal');
+			text.setAttribute('letter-spacing', '0');
+			text.setAttribute('fill', renderDepth === 0 ? '#ffffff' : '#1a1a1a');
+			label.replaceWith(text);
+		});
+		cloneG.setAttribute('transform', '');
+		return cloneG;
+	}
+
+	_draw_export_edges(g, node) {
+		if (node.collapsed || !node.children.length) return;
+		const ns = 'http://www.w3.org/2000/svg';
+		const colors = this._colors();
+		const mode = this.field_layout?.get_value() || 'Right';
+		const isSingle = node.children.length === 1;
+		node.children.forEach((child) => {
+			const edgeCol = colors[Math.min(child.depth, colors.length - 1)];
+			const goLeft = mode === 'Tree' ? child.x < node.x : false;
+			const x1 = goLeft ? node.x : node.x + node.w;
+			const x2 = goLeft ? child.x + child.w : child.x;
+			const y1 = node.depth === 0 ? node.y : node.y + 12;
+			const y2 = child.y + 12;
+			const path = document.createElementNS(ns, 'path');
+			const curve = Math.max(28, Math.min(58, Math.abs(x2 - x1) * 0.35));
+			const d = isSingle
+				? `M${x1},${y1} C${x1 + (x2 - x1) * 0.5},${y1} ${x1 + (x2 - x1) * 0.5},${y2} ${x2},${y2}`
+				: `M${x1},${y1} C${x1 + (goLeft ? -curve : curve)},${y1} ${x2 + (goLeft ? curve : -curve)},${y2} ${x2},${y2}`;
+			path.setAttribute('d', d);
+			path.setAttribute('fill', 'none');
+			path.setAttribute('stroke', edgeCol);
+			path.setAttribute('stroke-width', '2.5');
+			path.setAttribute('opacity', '1');
+			path.setAttribute('stroke-linecap', 'butt');
+			path.setAttribute('stroke-linejoin', 'round');
+			g.appendChild(path);
+			this._draw_export_edges(g, child);
+		});
+	}
+
 	_cycle_theme() {
 		const order = ['Auto', 'Light', 'Dark'];
 		const current = this.field_theme?.get_value() || 'Auto';
@@ -1806,9 +2312,11 @@ class MindMapPage {
 	_update_footer_meta() {
 		const text = document.getElementById('mm-description-text');
 		if (text) {
+			const docLabel = (this.doc?.title || this.doc?.name || '').trim() || 'Document Name';
 			const description = (this.doc?.description || '').trim();
-			text.textContent = description || 'No description';
-			text.setAttribute('title', description || 'No description');
+			const value = `${docLabel} | ${description || 'Description'}`;
+			text.textContent = value;
+			text.setAttribute('title', value);
 		}
 		this._update_theme_button();
 	}
@@ -1888,7 +2396,12 @@ class MindMapPage {
 
 	_restore_last_map() {
 		const l = localStorage.getItem('mm_last_map');
-		if (l) { this.field_doc.set_value(l); this._load(l); }
+		if (l) {
+			this._suppress_doc_change = true;
+			this.field_doc.set_value(l);
+			setTimeout(() => { this._suppress_doc_change = false; }, 0);
+			this._load(l);
+		}
 	}
 
 	// ── Export ─────────────────────────────────────────────────────────────────
@@ -1899,9 +2412,8 @@ class MindMapPage {
 		const defs = document.getElementById('mm-defs');
 
 		// Clone and remove UI-only elements
-		const cloneG = g.cloneNode(true);
+		const cloneG = this._prepare_export_group(g);
 		const cloneDefs = defs.cloneNode(true);
-		cloneG.querySelectorAll('.mm-btn').forEach(b => b.remove());
 
 		// Use getBBox BEFORE cloning to get accurate bounds
 		const bbox = g.getBBox();
@@ -1932,9 +2444,6 @@ class MindMapPage {
 			}
 		});
 
-		// Remove transform from cloneG — we use viewBox instead
-		cloneG.setAttribute('transform', '');
-
 		svg.appendChild(cloneDefs);
 		svg.appendChild(bg);
 		svg.appendChild(cloneG);
@@ -1948,6 +2457,14 @@ class MindMapPage {
 	}
 
 	_export_png() {
+		return this._export_raster('png');
+	}
+
+	_export_jpg() {
+		return this._export_raster('jpeg');
+	}
+
+	_export_raster(format = 'png') {
 		if (!this.doc) return;
 		const g = document.getElementById('mm-g');
 		const defs = document.getElementById('mm-defs');
@@ -1959,14 +2476,14 @@ class MindMapPage {
 
 		const canvas = document.createElement('canvas');
 		const ctx = canvas.getContext('2d');
-		const dpr = 2;
+		const dpr = 3;
 		canvas.width = W * dpr;
 		canvas.height = H * dpr;
 		ctx.scale(dpr, dpr);
+		ctx.imageSmoothingEnabled = true;
+		ctx.imageSmoothingQuality = 'high';
 
-		const cloneG = g.cloneNode(true);
-		cloneG.querySelectorAll('.mm-btn').forEach(b => b.remove());
-		cloneG.setAttribute('transform', '');
+		const cloneG = this._prepare_export_group(g);
 
 		// Fix var() references in clone
 		cloneG.querySelectorAll('text').forEach(t => {
@@ -1988,9 +2505,9 @@ class MindMapPage {
 			canvas.toBlob(b => {
 				const a = document.createElement('a');
 				a.href = URL.createObjectURL(b);
-				a.download = `${this.doc.title || 'MindMap'}.png`;
+				a.download = `${this.doc.title || 'MindMap'}.${format === 'jpeg' ? 'jpg' : 'png'}`;
 				a.click();
-			}, 'image/png');
+			}, format === 'jpeg' ? 'image/jpeg' : 'image/png', format === 'jpeg' ? 0.97 : undefined);
 		};
 		img.onerror = () => {
 			// Fallback: try with encodeURIComponent
@@ -2012,7 +2529,9 @@ class MindMapPage {
 					args: { doc: { doctype: 'Mind Map', title: v.title, map_json: JSON.stringify({ label: v.title }, null, 2) } },
 					callback: r => {
 						d.hide();
+						this._suppress_doc_change = true;
 						this.field_doc.set_value(r.message.name);
+						setTimeout(() => { this._suppress_doc_change = false; }, 0);
 						this._load(r.message.name);
 					}
 				});
@@ -2027,7 +2546,9 @@ class MindMapPage {
 			fields: [{ fieldtype: 'Link', fieldname: 'name', label: __('Mind Map'), options: 'Mind Map', reqd: 1 }],
 			primary_action: v => {
 				d.hide();
+				this._suppress_doc_change = true;
 				this.field_doc.set_value(v.name);
+				setTimeout(() => { this._suppress_doc_change = false; }, 0);
 				this._load(v.name);
 			}
 		});

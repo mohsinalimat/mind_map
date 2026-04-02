@@ -14,7 +14,7 @@ It is designed for fast note structuring, planning, documentation trees, product
 - Organize ideas in `Right` or `Tree` layout.
 - Expand and collapse branches quickly.
 - Reorder nodes with drag and drop.
-- Export maps as `PNG` or `SVG`.
+- Export maps as `PNG`, `JPG`, or `SVG`.
 
 ## Main Features
 
@@ -27,6 +27,7 @@ The app includes a dedicated Desk page called `mind-map-viewer` for working on m
 - Fit-to-screen action
 - Context menu for node actions
 - Toolbar for open, save, export, and view controls
+- Footer metadata showing document name and description
 
 ### Two Layout Modes
 
@@ -56,6 +57,8 @@ Available actions include:
 - Rename node
 - Delete node
 - Expand or collapse node branches
+- Focus a branch as a temporary working view and return to the full map
+- Collapse or expand from the main node using its right-side toggle button
 
 Most of these are available through both shortcuts and the node context menu.
 
@@ -76,6 +79,7 @@ You can select multiple nodes for batch actions.
 - Drag on empty canvas to lasso-select multiple nodes
 - Delete selected nodes together
 
+
 ### Pan and Zoom
 
 Navigation is designed for larger maps.
@@ -84,12 +88,14 @@ Navigation is designed for larger maps.
 - Spacebar pan mode
 - Click-and-drag canvas navigation
 - Fit map to screen with `F`
+- Smooth viewport transitions for fit and branch focus actions
 
 ### Export
 
 You can export maps for sharing or documentation.
 
 - Export **PNG**
+- Export **JPG**
 - Export **SVG**
 
 ### Theme Support
@@ -102,7 +108,7 @@ The document based a theme selection:
 
 ### Autosave
 
-Maps are marked dirty during editing and saved automatically after a short delay, while also supporting manual save from the toolbar.
+Maps are marked dirty during editing and saved automatically after a short delay, while also supporting manual save from the toolbar and `Ctrl+S`.
 
 ## Keyboard Shortcuts
 
@@ -113,6 +119,7 @@ Current shortcuts shown in the app footer:
 - `F2`: Rename
 - `Del` / `Backspace`: Delete
 - `Space`: Pan mode
+- `Ctrl+S`: Save
 - `Ctrl+Z`: Undo
 - `F`: Fit screen
 
