@@ -52,6 +52,9 @@ class MindMapPage {
 		this._save_in_flight = false;
 		this._queued_save = false;
 		this._is_dirty = false;
+		this._fullscreen_host = null;
+		this._fullscreen_root_placeholder = null;
+		this._fullscreen_footer_placeholder = null;
 		this._make_toolbar();
 		this._make_layout();
 	}
@@ -83,7 +86,7 @@ class MindMapPage {
 				this._apply_theme();
 				if (this.doc && !this._suppress_dirty) {
 					this.doc.theme = this.field_theme.get_value() || 'Auto';
-					this._mark_dirty();
+					this._save({ force: true, quiet: true });
 				}
 			},
 		});
@@ -97,7 +100,7 @@ class MindMapPage {
 				this._remember_layout();
 				this._re_render();
 				if (this.tree) this._fit_view(this._get_render_root());
-				if (this.tree && !this._suppress_dirty) this._mark_dirty();
+				if (this.tree && !this._suppress_dirty) this._save({ force: true, quiet: true });
 			},
 		});
 
@@ -107,9 +110,6 @@ class MindMapPage {
 		p.add_inner_button(__('Export PNG'), () => this._export_png(), __('Export'));
 		p.add_inner_button(__('Export JPG'), () => this._export_jpg(), __('Export'));
 		p.add_inner_button(__('Export SVG'), () => this._export_svg(), __('Export'));
-
-		p.add_inner_button(__('Expand All'), () => this._toggle_all(false), __('View'));
-		p.add_inner_button(__('Collapse All'), () => this._toggle_all(true), __('View'));
 
 		p.set_primary_action(__('Save'), () => this._save(), 'save');
 		setTimeout(() => this._update_save_button_label(), 0);
@@ -130,7 +130,97 @@ class MindMapPage {
 		walk(this.tree);
 		this.tree = this._build(this._serialize(this.tree), null);
 		this._re_render();
-		this._mark_dirty();
+		if (this.tree) this._fit_view(this._get_render_root());
+		if (!this._suppress_dirty && this.doc) this._save({ force: true, quiet: true });
+	}
+
+	_has_any_expanded_branch(node) {
+		if (!node?.children?.length) return false;
+		if (!node.collapsed) return true;
+		return node.children.some(child => this._has_any_expanded_branch(child));
+	}
+
+	_toggle_expand_collapse_all() {
+		if (!this.tree) return;
+		const shouldCollapse = this._has_any_expanded_branch(this.tree);
+		this._toggle_all(shouldCollapse);
+	}
+
+	_is_canvas_fullscreen() {
+		return !!this._fullscreen_host && document.fullscreenElement === this._fullscreen_host;
+	}
+
+	_ensure_fullscreen_host() {
+		if (this._fullscreen_host?.isConnected) return this._fullscreen_host;
+		const host = document.createElement('div');
+		host.id = 'mm-fullscreen-host';
+		Object.assign(host.style, {
+			display: 'flex',
+			flexDirection: 'column',
+			width: '100vw',
+			height: '100vh',
+			background: 'var(--bg-color)',
+			overflow: 'hidden'
+		});
+		this._fullscreen_host = host;
+		return host;
+	}
+
+	_mount_fullscreen_content() {
+		const root = document.getElementById('mm-root');
+		const footer = document.getElementById('mm-footer');
+		if (!root || !footer) return null;
+		const host = this._ensure_fullscreen_host();
+		if (!host.isConnected) document.body.appendChild(host);
+		if (!this._fullscreen_root_placeholder) this._fullscreen_root_placeholder = document.createComment('mm-root-placeholder');
+		if (!this._fullscreen_footer_placeholder) this._fullscreen_footer_placeholder = document.createComment('mm-footer-placeholder');
+		if (root.parentNode) root.parentNode.insertBefore(this._fullscreen_root_placeholder, root);
+		if (footer.parentNode) footer.parentNode.insertBefore(this._fullscreen_footer_placeholder, footer);
+		root.style.flex = '1';
+		host.appendChild(root);
+		host.appendChild(footer);
+		return host;
+	}
+
+	_unmount_fullscreen_content() {
+		const root = document.getElementById('mm-root');
+		const footer = document.getElementById('mm-footer');
+		if (root && this._fullscreen_root_placeholder?.parentNode) {
+			root.style.flex = '';
+			this._fullscreen_root_placeholder.parentNode.insertBefore(root, this._fullscreen_root_placeholder);
+			this._fullscreen_root_placeholder.remove();
+			this._fullscreen_root_placeholder = null;
+		}
+		if (footer && this._fullscreen_footer_placeholder?.parentNode) {
+			this._fullscreen_footer_placeholder.parentNode.insertBefore(footer, this._fullscreen_footer_placeholder);
+			this._fullscreen_footer_placeholder.remove();
+			this._fullscreen_footer_placeholder = null;
+		}
+		if (this._fullscreen_host?.isConnected) this._fullscreen_host.remove();
+	}
+
+	async _toggle_canvas_fullscreen() {
+		try {
+			if (this._is_canvas_fullscreen()) {
+				if (document.fullscreenElement && document.exitFullscreen) {
+					await document.exitFullscreen();
+				} else {
+					this._unmount_fullscreen_content();
+				}
+			} else {
+				const host = this._mount_fullscreen_content();
+				if (!host) return;
+				if (!host.requestFullscreen) {
+					throw new Error('Fullscreen API is not available');
+				}
+				await host.requestFullscreen();
+			}
+		} catch (e) {
+			console.warn('Mind map fullscreen toggle failed', e);
+			if (!document.fullscreenElement) this._unmount_fullscreen_content();
+		} finally {
+			this._update_fullscreen_button();
+		}
 	}
 
 	// ── Layout ─────────────────────────────────────────────────────────────────
@@ -163,10 +253,12 @@ class MindMapPage {
 				</span>
 				<span id="mm-mode-label" style="font-weight:600;color:var(--text-color)">✦ Select Mode</span>
 				<span id="mm-save-status" style="display:none;font-weight:700"></span>
-				<button id="mm-shortcuts-btn" class="btn btn-default btn-sm" title="Shortcuts" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:16px">⌨</button>
-				<button id="mm-layout-btn" class="btn btn-default btn-sm" title="Layout: Right" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:17px;font-weight:600">⇢</button>
+				<button id="mm-layout-btn" class="btn btn-default btn-sm" title="Layout: Right" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:17px;font-weight:600">${frappe.utils.icon('folder-tree', 'sm')}</button>
+				<button id="mm-expand-collapse-btn" class="btn btn-default btn-sm" title="Collapse All" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:16px;font-weight:700">${frappe.utils.icon('square-minus', 'sm')}</button>
 				<button id="mm-theme-btn" class="btn btn-default btn-sm" title="Theme" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:18px"></button>
 				<button id="mm-fit-btn" class="btn btn-default btn-sm" title="Fit to Screen" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:18px">⊙</button>
+				<button id="mm-fullscreen-btn" class="btn btn-default btn-sm" title="Fullscreen Canvas" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:16px">${frappe.utils.icon('fullscreen', 'sm')}</button>
+				<button id="mm-shortcuts-btn" class="btn btn-default btn-sm" title="Shortcuts" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:16px">${frappe.utils.icon('keyboard', 'sm')}</button>
 			</div>
 		`);
 
@@ -183,14 +275,22 @@ class MindMapPage {
 		document.getElementById('mm-fit-btn').addEventListener('click', () => {
 			if (this.tree) this._fit_view(this._get_render_root());
 		});
-		document.getElementById('mm-shortcuts-btn').addEventListener('click', () => this._open_shortcuts_dialog());
-		document.getElementById('mm-theme-btn').addEventListener('click', () => this._cycle_theme());
-		document.getElementById('mm-description-edit').addEventListener('click', () => this._open_description_dialog());
+		document.getElementById('mm-fullscreen-btn').addEventListener('click', () => this._toggle_canvas_fullscreen());
 		document.getElementById('mm-layout-btn').addEventListener('click', () => {
 			const current = this.field_layout?.get_value() || 'Right';
 			const next = current === 'Right' ? 'Tree' : 'Right';
 			this.field_layout.set_value(next);
-			if (this.doc) setTimeout(() => this._save(), 300);
+		});
+		document.getElementById('mm-expand-collapse-btn').addEventListener('click', () => this._toggle_expand_collapse_all());
+		document.getElementById('mm-theme-btn').addEventListener('click', () => this._cycle_theme());
+		document.getElementById('mm-shortcuts-btn').addEventListener('click', () => this._open_shortcuts_dialog());
+		document.getElementById('mm-description-edit').addEventListener('click', () => this._open_description_dialog());
+		document.addEventListener('fullscreenchange', () => {
+			if (!document.fullscreenElement) this._unmount_fullscreen_content();
+			this._update_fullscreen_button();
+			if (this.tree) {
+				requestAnimationFrame(() => this._fit_view(this._get_render_root()));
+			}
 		});
 
 		document.addEventListener('keydown', (e) => {
@@ -506,6 +606,8 @@ class MindMapPage {
 	_re_render() {
 		if (!this.tree) return;
 		this._update_layout_button();
+		this._update_expand_collapse_button();
+		this._update_fullscreen_button();
 		this._update_focus_button();
 		const g = document.getElementById('mm-g');
 		const defs = document.getElementById('mm-defs');
@@ -605,29 +707,19 @@ class MindMapPage {
 				return cur;
 			};
 
-			// First pass: compute total vertical span to center root
-			// We need both sides to start from the same Y top
-			// Estimate total leaf count
-			const totalLeaves = Math.max(leftSize + rightSize, 1);
-			const startY = -(totalLeaves * gapY) / 2;
-
-			let leftY = startY;
-			let rightY = startY;
+			// Center each side independently so one expanded branch
+			// does not pull the opposite side upward or downward.
+			const getStartY = (size) => -((Math.max(size, 1) - 1) * gapY) / 2;
+			let leftY = getStartY(leftSize);
+			let rightY = getStartY(rightSize);
 
 			// Layout right side
 			right.forEach(c => { rightY = solveDir(c, root.w + gapX, rightY, 'right'); });
 			// Layout left side (each child's own width used for its x)
 			left.forEach(c => { leftY = solveDir(c, -(gapX + c.w), leftY, 'left'); });
 
-			// Center root vertically between the first and last direct children
 			root.x = 0;
-			const allDirect = [...right, ...left];
-			if (allDirect.length > 0) {
-				const ys = allDirect.map(c => c.y);
-				root.y = (Math.min(...ys) + Math.max(...ys)) / 2;
-			} else {
-				root.y = 0;
-			}
+			root.y = 0;
 
 		} else {
 			// ── Right (flow right) layout ────────────────────────────────────
@@ -1969,16 +2061,22 @@ class MindMapPage {
 
 	// ── Save / Serialize ───────────────────────────────────────────────────────
 
-	_save() {
+	_save(opts = {}) {
+		const force = !!opts.force;
+		const quiet = !!opts.quiet;
 		if (!this.doc) return;
-		if (!this._is_dirty) return;
+		if (!this._is_dirty && !force) return;
 		if (this._save_in_flight) {
-			this._queued_save = true;
+			const queued = this._queued_save || {};
+			this._queued_save = {
+				force: !!(queued.force || force),
+				quiet: queued.quiet === undefined ? quiet : (queued.quiet && quiet)
+			};
 			return;
 		}
 		this._save_in_flight = true;
 		clearTimeout(this._autosave_timer);
-		this._set_save_status('Saving...');
+		if (!quiet) this._set_save_status('Saving...');
 		frappe.call({
 			method: 'frappe.client.set_value',
 			args: {
@@ -1998,17 +2096,18 @@ class MindMapPage {
 					if (r.message.modified) this.doc.modified = r.message.modified;
 					if (r.message.name) this.doc.name = r.message.name;
 				}
-				this._set_save_status('Saved');
+				if (!quiet) this._set_save_status('Saved');
 				this._update_footer_meta();
 				if (this._queued_save) {
+					const queued = this._queued_save;
 					this._queued_save = false;
-					this._save();
+					this._save(queued);
 				}
 			},
 			error: () => {
 				this._save_in_flight = false;
-				this._is_dirty = false;
-				this._set_save_status('Unsaved');
+				this._is_dirty = !force;
+				if (!quiet) this._set_save_status('Unsaved');
 			}
 		});
 	}
@@ -2036,10 +2135,8 @@ class MindMapPage {
 	_set_save_status(t, opts = {}) {
 		const s = document.getElementById('mm-save-status');
 		if (s) s.textContent = t;
-		const silent = !!opts.silent;
 		if (t === 'Saved') {
 			this.page.clear_indicator();
-			if (!silent) frappe.show_alert({ message: __('Saved'), indicator: 'green' }, 3);
 		} else if (t === 'Unsaved') {
 			this.page.set_indicator(__('Not Saved'), 'orange');
 		}
@@ -2216,8 +2313,30 @@ class MindMapPage {
 		const btn = document.getElementById('mm-layout-btn');
 		if (!btn) return;
 		const layout = this.field_layout?.get_value() || 'Right';
-		btn.textContent = layout === 'Tree' ? '⑂' : '⇢';
+		btn.innerHTML = layout === 'Tree'
+			? frappe.utils.icon('list-tree', 'sm')
+			: frappe.utils.icon('folder-tree', 'sm');
 		btn.setAttribute('title', `Layout: ${layout}`);
+	}
+
+	_update_expand_collapse_button() {
+		const btn = document.getElementById('mm-expand-collapse-btn');
+		if (!btn) return;
+		const canCollapse = this._has_any_expanded_branch(this.tree);
+		btn.innerHTML = canCollapse
+			? frappe.utils.icon('square-minus', 'sm')
+			: frappe.utils.icon('square-plus', 'sm');
+		btn.setAttribute('title', canCollapse ? 'Collapse All' : 'Expand All');
+	}
+
+	_update_fullscreen_button() {
+		const btn = document.getElementById('mm-fullscreen-btn');
+		if (!btn) return;
+		const active = this._is_canvas_fullscreen();
+		btn.innerHTML = active
+			? frappe.utils.icon('shrink', 'sm')
+			: frappe.utils.icon('fullscreen', 'sm');
+		btn.setAttribute('title', active ? 'Exit Fullscreen' : 'Fullscreen Canvas');
 	}
 
 	_update_focus_button() {
@@ -2306,7 +2425,6 @@ class MindMapPage {
 		const current = this.field_theme?.get_value() || 'Auto';
 		const next = order[(order.indexOf(current) + 1) % order.length];
 		this.field_theme.set_value(next);
-		if (this.doc) this._save();
 	}
 
 	_update_footer_meta() {
@@ -2377,7 +2495,7 @@ class MindMapPage {
 			primary_action: (values) => {
 				this.doc.description = values.description || '';
 				this._update_footer_meta();
-				this._mark_dirty();
+				this._save({ force: true, quiet: true });
 				d.hide();
 			},
 		});

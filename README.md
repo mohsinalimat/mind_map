@@ -25,6 +25,7 @@ The app includes a dedicated Desk page called `mind-map-viewer` for working on m
 - Full-canvas editing experience
 - Clean zoomable SVG-based map rendering
 - Fit-to-screen action
+- Canvas fullscreen mode with footer controls still visible
 - Context menu for node actions
 - Toolbar for open, save, export, and view controls
 - Footer metadata showing document name and description
@@ -88,6 +89,7 @@ Navigation is designed for larger maps.
 - Spacebar pan mode
 - Click-and-drag canvas navigation
 - Fit map to screen with `F`
+- Fullscreen mode for the working canvas, with `Esc` to exit
 - Smooth viewport transitions for fit and branch focus actions
 
 ### Export
