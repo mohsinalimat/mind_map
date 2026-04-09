@@ -239,7 +239,7 @@ class MindMapPage {
 						<rect id="mm-lasso" style="display:none;fill:rgba(83,74,183,0.08);stroke:#534AB7;stroke-width:1.5;stroke-dasharray:5,3;pointer-events:none" rx="3"/>
 					</svg>
 					<div id="mm-placeholder" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:14px;pointer-events:none">
-						Select a Mind Map from the toolbar ↑
+						Select a Mind Map or Create New One from the toolbar ↑
 					</div>
 				</div>
 				<div id="mm-ctx" style="display:none;position:fixed;z-index:9999;background:var(--card-bg,#fff);border:1px solid var(--border-color);border-radius:8px;padding:4px 0;box-shadow:0 4px 16px rgba(0,0,0,0.12);font-size:13px"></div>
@@ -252,7 +252,6 @@ class MindMapPage {
 					<button id="mm-description-edit" class="btn btn-default btn-sm" title="Edit Description" style="height:30px;min-width:30px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;font-size:14px">✎</button>
 				</span>
 				<span id="mm-mode-label" style="font-weight:600;color:var(--text-color)">✦ Select Mode</span>
-				<span id="mm-save-status" style="display:none;font-weight:700"></span>
 				<button id="mm-layout-btn" class="btn btn-default btn-sm" title="Layout: Right" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:17px;font-weight:600">${frappe.utils.icon('folder-tree', 'sm')}</button>
 				<button id="mm-expand-collapse-btn" class="btn btn-default btn-sm" title="Collapse All" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:16px;font-weight:700">${frappe.utils.icon('square-minus', 'sm')}</button>
 				<button id="mm-theme-btn" class="btn btn-default btn-sm" title="Theme" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:18px"></button>
@@ -265,6 +264,7 @@ class MindMapPage {
 		window._mm = this;
 		this._bind_events();
 		setTimeout(() => this._restore_last_map(), 400);
+		setTimeout(() => this._set_canvas_buttons_visible(false), 0);
 	}
 
 	// ── Events ─────────────────────────────────────────────────────────────────
@@ -361,8 +361,14 @@ class MindMapPage {
 			this._hide_ctx();
 			// Do NOT e.preventDefault() here — let browser native menu show
 		});
-		cv.addEventListener('dragstart', (e) => e.preventDefault());
-		cv.addEventListener('selectstart', (e) => e.preventDefault());
+		cv.addEventListener('dragstart', (e) => {
+			if (e.target?.closest?.('.mm-edit-label')) return;
+			e.preventDefault();
+		});
+		cv.addEventListener('selectstart', (e) => {
+			if (e.target?.closest?.('.mm-edit-label')) return;
+			e.preventDefault();
+		});
 
 		window.addEventListener('mouseup', () => {
 			if (this.drag) {
@@ -577,6 +583,7 @@ class MindMapPage {
 					this._loading_doc = false;
 					this._is_dirty = false;
 					this._set_save_status('Saved', { silent: true });
+					this._set_canvas_buttons_visible(true);  // ← add this line
 				}, 0);
 			},
 		});
@@ -1598,7 +1605,6 @@ class MindMapPage {
 	_start_rename(node, opts = {}) {
 		if (!node || !node._el_rect) return;
 
-		const ns = 'http://www.w3.org/2000/svg';
 		const grp = node._el_rect.parentNode;
 		const renderDepth = this._depth(node);
 		const col = this._colors()[Math.min(renderDepth, this._colors().length - 1)];
@@ -1634,6 +1640,7 @@ class MindMapPage {
 		let foW = calcW(initText);
 		let frameW = foW + boxExtra;
 
+		const ns = 'http://www.w3.org/2000/svg';
 		const fo = document.createElementNS(ns, 'foreignObject');
 		fo.classList.add('mm-edit-label');
 		fo.setAttribute('x', renderDepth === 0 ? 0 : (isLeftTreeNode ? (node.w - foW - framePad) : -framePad));
@@ -1654,24 +1661,22 @@ class MindMapPage {
 				el.style.setProperty('color', activeColor, 'important');
 				el.style.setProperty('-webkit-text-fill-color', activeColor, 'important');
 				el.style.setProperty('caret-color', activeColor, 'important');
-				el.style.setProperty('text-shadow', `0 0 0 ${activeColor}`, 'important');
 				el.style.setProperty('background', 'transparent', 'important');
 				el.style.setProperty('opacity', '1', 'important');
 			});
 		};
+
 		Object.assign(div.style, {
 			outline: 'none',
 			fontSize: renderDepth === 0 ? '16px' : '14px',
 			fontWeight: renderDepth === 0 ? 'bold' : '500',
 			fontFamily: this._get_font_family(),
-			display: 'flex',
-			alignItems: 'center',
-			justifyContent: 'center',
+			display: 'block',
 			textAlign: 'center',
-			whiteSpace: 'nowrap',
+			whiteSpace: 'pre',
 			padding: `0 ${frame.paddingX}px`,
 			boxSizing: 'border-box',
-			lineHeight: '1',
+			lineHeight: `${frame.height}px`,
 			width: frameW + 'px',
 			minWidth: '80px',
 			height: frame.height + 'px',
@@ -1682,39 +1687,40 @@ class MindMapPage {
 			position: 'relative',
 			top: this._get_label_text_nudge(node),
 			opacity: '1',
+			overflow: 'hidden',
 		});
 		applyEditTextColor();
 		div.style.pointerEvents = 'auto';
 		div.addEventListener('mousedown', (e) => e.stopPropagation());
+		div.addEventListener('mouseup', (e) => e.stopPropagation());
 		div.addEventListener('click', (e) => e.stopPropagation());
 		div.addEventListener('dblclick', (e) => e.stopPropagation());
 
 		fo.appendChild(div);
 		grp.appendChild(fo);
 
-		// Put caret at end to avoid the selected-text flash on rename
-		div.focus();
-		const range = document.createRange();
-		range.selectNodeContents(div);
-		range.collapse(false);
-		const sel = window.getSelection();
-		sel.removeAllRanges();
-		sel.addRange(range);
+		const placeCaretAtEnd = () => {
+			const range = document.createRange();
+			range.selectNodeContents(div);
+			range.collapse(false);
+			const sel = window.getSelection();
+			sel.removeAllRanges();
+			sel.addRange(range);
+		};
 
 		const update = () => {
 			applyEditTextColor();
 			const text = div.innerText || '';
 			const w = calcW(text);
 			const prevW = node.w;
-			const nextFrameW = w + boxExtra;
 			if (prevW !== w) {
 				this._live_edit_relayout(node, prevW, w, isLeftTreeNode, fo, framePad);
 			}
 			if (isLeftTreeNode) {
 				fo.setAttribute('x', node.w - w - framePad);
 			}
-			fo.setAttribute('width', nextFrameW);
-			div.style.width = nextFrameW + 'px';
+			fo.setAttribute('width', w + boxExtra);
+			div.style.width = (w + boxExtra) + 'px';
 			if (renderDepth === 0 && node._el_rect) {
 				node._el_rect.setAttribute('width', w);
 			}
@@ -1782,6 +1788,7 @@ class MindMapPage {
 			node.label = val;
 			node.w = calcW(val);
 			this._set_label_text(oldText, val);
+			restoreEditState();
 
 			this._push_history();
 			this.tree = this._build(this._serialize(this.tree), null);
@@ -1815,25 +1822,19 @@ class MindMapPage {
 				}, 0);
 			}
 		};
-		const hasSelectionInside = () => {
-			const sel = window.getSelection();
-			if (!sel || sel.rangeCount === 0) return false;
-			const anchorNode = sel.anchorNode;
-			const focusNode = sel.focusNode;
-			return (anchorNode && div.contains(anchorNode)) || (focusNode && div.contains(focusNode));
-		};
 		document.addEventListener('mousedown', onDocMouseDown, true);
 
 		div.addEventListener('input', update);
 		update(); // initial sync
+		requestAnimationFrame(() => {
+			if (!div.isConnected) return;
+			div.focus({ preventScroll: true });
+			placeCaretAtEnd();
+		});
 
 		div.addEventListener('blur', () => {
 			setTimeout(() => {
 				if (!div.isConnected) return;
-				if (hasSelectionInside()) {
-					div.focus();
-					return;
-				}
 				if (document.activeElement !== div) saveOnce();
 			}, 120);
 		});
@@ -1875,8 +1876,24 @@ class MindMapPage {
 
 	// ── Node Mutations ─────────────────────────────────────────────────────────
 
+	_discard_new_node(nodeId, fallbackNodeId = null) {
+		if (!this.tree) return;
+		const node = this._find_by_id(this.tree, nodeId);
+		if (!node) return;
+		if (node._parent) {
+			node._parent.children = node._parent.children.filter(child => child._id !== nodeId);
+		}
+		this.tree = this._build(this._serialize(this.tree), null);
+		this._re_render();
+		this._clear_multi_select();
+		const fallback = fallbackNodeId ? this._find_by_id(this.tree, fallbackNodeId) : null;
+		if (fallback) this._select(fallback);
+		else this._deselect();
+	}
+
 	_add_child(node) {
 		const newId = Math.random().toString(36).slice(2, 9);
+		const previousSelectedId = this.selected?._id || node._id;
 		const c = {
 			label: '', // empty label — user types fresh
 			children: [],
@@ -1897,12 +1914,7 @@ class MindMapPage {
 			this._start_rename(newNode, {
 				is_new: true,
 				on_cancel: () => {
-					// Remove node if user typed nothing
-					if (newNode._parent) {
-						newNode._parent.children = newNode._parent.children.filter(x => x._id !== newId);
-					}
-					this.tree = this._build(this._serialize(this.tree), null);
-					this._re_render();
+					this._discard_new_node(newId, previousSelectedId);
 				}
 			});
 		}, 100);
@@ -1911,6 +1923,7 @@ class MindMapPage {
 	_add_sibling(node) {
 		if (!node._parent) return;
 		const newId = Math.random().toString(36).slice(2, 9);
+		const previousSelectedId = this.selected?._id || node._id;
 		const s = {
 			label: '',
 			children: [],
@@ -1929,11 +1942,7 @@ class MindMapPage {
 			this._start_rename(newNode, {
 				is_new: true,
 				on_cancel: () => {
-					if (newNode._parent) {
-						newNode._parent.children = newNode._parent.children.filter(x => x._id !== newId);
-					}
-					this.tree = this._build(this._serialize(this.tree), null);
-					this._re_render();
+					this._discard_new_node(newId, previousSelectedId);
 				}
 			});
 		}, 100);
@@ -2179,7 +2188,7 @@ class MindMapPage {
 	_update_node_controls(node) {
 		const grp = this._get_node_group(node);
 		const renderDepth = this._depth(node);
-		if (!grp || !node.children.length || renderDepth === 0) return;
+		if (!grp || !node.children.length) return;
 		const btn = grp.querySelector('.mm-btn');
 		if (!btn) return;
 		const mode = this.field_layout?.get_value() || 'Right';
@@ -2187,7 +2196,7 @@ class MindMapPage {
 		const goLeft = mode === 'Tree' && node._parent && node.x < node._parent.x;
 		const buttonOffset = 14;
 		const bx = goLeft ? -buttonOffset : node.w + buttonOffset;
-		const by = 22;
+		const by = renderDepth === 0 ? 18 : 22;
 		btn.innerHTML = `
 			<circle cx="${bx}" cy="${by}" r="9" fill="var(--card-bg)" stroke="${col}" stroke-width="2" opacity="0.95"/>
 			<text x="${bx}" y="${by}" text-anchor="middle" dominant-baseline="central" font-size="13" fill="${col}" font-weight="bold">${node.collapsed ? '+' : '−'}</text>
@@ -2439,6 +2448,40 @@ class MindMapPage {
 		this._update_theme_button();
 	}
 
+	_set_canvas_buttons_visible(visible) {
+		const display = visible ? '' : 'none';
+		const forceHide = (el) => {
+			if (!el) return;
+			if (visible) el.style.removeProperty('display');
+			else el.style.setProperty('display', 'none', 'important');
+		};
+
+		// Footer elements
+		['mm-layout-btn', 'mm-expand-collapse-btn', 'mm-theme-btn',
+		'mm-fit-btn', 'mm-fullscreen-btn', 'mm-mode-label', 'mm-save-status'
+		].forEach(id => forceHide(document.getElementById(id)));
+
+		const descWrap = document.getElementById('mm-description-wrap');
+		if (descWrap) {
+			descWrap.querySelectorAll('span, button').forEach(el => {
+				if (visible) el.style.removeProperty('display');
+				else el.style.setProperty('display', 'none', 'important');
+			});
+		}
+
+		// Frappe toolbar: Save button
+		if (this.page?.btn_primary) {
+			this.page.btn_primary.css('display', display);
+		}
+
+		// Export group — target by data-label attribute
+		if (this.page?.inner_toolbar) {
+			this.page.inner_toolbar
+				.find('.inner-group-button[data-label="Export"]')
+				.css('display', display);
+		}
+	}
+
 	_open_shortcuts_dialog() {
 		if (this._shortcut_dialog) {
 			this._shortcut_dialog.show();
@@ -2640,11 +2683,14 @@ class MindMapPage {
 	_new_doc() {
 		const d = new frappe.ui.Dialog({
 			title: __('New Mind Map'),
-			fields: [{ fieldtype: 'Data', fieldname: 'title', label: __('Title'), reqd: 1 }],
+			fields: [
+				{ fieldtype: 'Data', fieldname: 'title', label: __('Title'), reqd: 1 },
+				{ fieldtype: 'Small Text', fieldname: 'description', label: __('Description') }
+			],
 			primary_action: v => {
 				frappe.call({
 					method: 'frappe.client.insert',
-					args: { doc: { doctype: 'Mind Map', title: v.title, map_json: JSON.stringify({ label: v.title }, null, 2) } },
+					args: { doc: { doctype: 'Mind Map', title: v.title, description: v.description || '', map_json: JSON.stringify({ label: v.title }, null, 2) } },
 					callback: r => {
 						d.hide();
 						this._suppress_doc_change = true;
