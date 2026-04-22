@@ -52,6 +52,8 @@ class MindMapPage {
 		this._save_in_flight = false;
 		this._queued_save = false;
 		this._is_dirty = false;
+		this._read_only = false;
+		this._suppress_layout_change = false;
 		this._fullscreen_host = null;
 		this._fullscreen_root_placeholder = null;
 		this._fullscreen_footer_placeholder = null;
@@ -77,30 +79,20 @@ class MindMapPage {
 			},
 		});
 
-		this.field_theme = p.add_field({
-			fieldname: 'theme',
-			label: __('Theme'),
-			fieldtype: 'Select',
-			options: '\nLight\nDark\nAuto',
-			change: () => {
-				this._apply_theme();
-				if (this.doc && !this._suppress_dirty) {
-					this.doc.theme = this.field_theme.get_value() || 'Auto';
-					this._save({ force: true, quiet: true });
-				}
-			},
-		});
-
 		this.field_layout = p.add_field({
 			fieldname: 'layout',
 			label: __('Layout'),
 			fieldtype: 'Select',
 			options: '\nRight\nTree',
 			change: () => {
+				if (this._suppress_layout_change) {
+					this._suppress_layout_change = false;
+					return;
+				}
 				this._remember_layout();
 				this._re_render();
 				if (this.tree) this._fit_view(this._get_render_root());
-				if (this.tree && !this._suppress_dirty) this._save({ force: true, quiet: true });
+				if (this.tree && !this._suppress_dirty && !this._loading_doc) this._save({ force: true, quiet: true });
 			},
 		});
 
@@ -128,10 +120,10 @@ class MindMapPage {
 			n.children.forEach(c => walk(c));
 		};
 		walk(this.tree);
-		this.tree = this._build(this._serialize(this.tree), null);
+		this._save_collapse_state();
+		this._rebuild_tree();
 		this._re_render();
 		if (this.tree) this._fit_view(this._get_render_root());
-		if (!this._suppress_dirty && this.doc) this._save({ force: true, quiet: true });
 	}
 
 	_has_any_expanded_branch(node) {
@@ -254,7 +246,6 @@ class MindMapPage {
 				<span id="mm-mode-label" style="font-weight:600;color:var(--text-color)">✦ Select Mode</span>
 				<button id="mm-layout-btn" class="btn btn-default btn-sm" title="Layout: Right" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:17px;font-weight:600">${frappe.utils.icon('folder-tree', 'sm')}</button>
 				<button id="mm-expand-collapse-btn" class="btn btn-default btn-sm" title="Collapse All" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:16px;font-weight:700">${frappe.utils.icon('square-minus', 'sm')}</button>
-				<button id="mm-theme-btn" class="btn btn-default btn-sm" title="Theme" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:18px"></button>
 				<button id="mm-fit-btn" class="btn btn-default btn-sm" title="Fit to Screen" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:18px">⊙</button>
 				<button id="mm-fullscreen-btn" class="btn btn-default btn-sm" title="Fullscreen Canvas" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:16px">${frappe.utils.icon('fullscreen', 'sm')}</button>
 				<button id="mm-shortcuts-btn" class="btn btn-default btn-sm" title="Shortcuts" style="height:32px;min-width:32px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;font-size:16px">${frappe.utils.icon('keyboard', 'sm')}</button>
@@ -282,7 +273,6 @@ class MindMapPage {
 			this.field_layout.set_value(next);
 		});
 		document.getElementById('mm-expand-collapse-btn').addEventListener('click', () => this._toggle_expand_collapse_all());
-		document.getElementById('mm-theme-btn').addEventListener('click', () => this._cycle_theme());
 		document.getElementById('mm-shortcuts-btn').addEventListener('click', () => this._open_shortcuts_dialog());
 		document.getElementById('mm-description-edit').addEventListener('click', () => this._open_description_dialog());
 		document.addEventListener('fullscreenchange', () => {
@@ -459,6 +449,13 @@ class MindMapPage {
 				this._save();
 				return;
 			}
+			if (this._read_only) {
+				if (e.key === 'Escape') {
+					this._deselect();
+					this._clear_multi_select();
+				}
+				return;
+			}
 
 			if ((e.key === 'Delete' || e.key === 'Backspace') && this._selected_nodes.size > 1) {
 				e.preventDefault();
@@ -514,6 +511,7 @@ class MindMapPage {
 		this._history_locked = true;
 		const snap = JSON.parse(this._history[this._history_index]);
 		this.tree = this._build(snap, null);
+		this._load_collapse_state();
 		this._re_render();
 		this._set_save_status('Unsaved');
 		this._history_locked = false;
@@ -567,6 +565,26 @@ class MindMapPage {
 			args: { doctype: 'Mind Map', name },
 			callback: r => {
 				if (!r.message) return;
+
+				// Permission: trust the server. If the server returned the doc,
+				// check perm explicitly. Owner always has write. Privileged roles always do.
+				// For everyone else, use frappe.perm.has_perm which is more reliable than can_write.
+				const roles = frappe.user_roles || frappe.boot?.user?.roles || [];
+				const isPrivileged = roles.includes('System Manager') || roles.includes('Administrator');
+				const isOwner = r.message.owner === frappe.session.user;
+				let hasRoleWrite = false;
+				try {
+					hasRoleWrite = !!(
+						frappe.model?.can_write?.('Mind Map') ||
+						frappe.perm?.has_perm?.('Mind Map', 1)
+					);
+				} catch(e) { hasRoleWrite = false; }
+
+				// Default to NOT read-only unless we're sure the user has no write access.
+				// If isOwner is true, never set read-only regardless of role checks.
+				this._read_only = isOwner ? false : !(isPrivileged || hasRoleWrite);
+
+				// ── Proceed with load ─────────────────────────────────────────────
 				clearTimeout(this._autosave_timer);
 				this._queued_save = false;
 				this._is_dirty = false;
@@ -574,7 +592,6 @@ class MindMapPage {
 				this._suppress_dirty = true;
 				this.doc = r.message;
 				localStorage.setItem('mm_last_map', name);
-				this.field_theme.set_value(this.doc.theme || 'Auto');
 				this._update_page_header();
 				this._update_footer_meta();
 				this._render(r.message.map_json || '{}');
@@ -583,9 +600,13 @@ class MindMapPage {
 					this._loading_doc = false;
 					this._is_dirty = false;
 					this._set_save_status('Saved', { silent: true });
-					this._set_canvas_buttons_visible(true);  // ← add this line
+					this._set_canvas_buttons_visible(true);
+					this._apply_read_only_mode();
 				}, 0);
 			},
+			error: () => {
+				frappe.msgprint(__('You do not have permission to view this Mind Map.'));
+			}
 		});
 	}
 
@@ -595,12 +616,13 @@ class MindMapPage {
 		const savedLayout = data.layout || this._get_saved_layout();
 		if (savedLayout === 'Right' || savedLayout === 'Tree') {
 			this._suppress_dirty = true;
+			this._suppress_layout_change = true;
 			this.field_layout.set_value(savedLayout);
 			this._suppress_dirty = false;
 		}
 		document.getElementById('mm-placeholder').style.display = 'none';
 		this.tree = this._build(data, null);
-		this.tree = this._build(this._serialize(this.tree), null);
+		this._rebuild_tree();
 		this._focus_root_id = null;
 		this._is_dirty = false;
 		this._update_footer_meta();
@@ -646,7 +668,7 @@ class MindMapPage {
 			label: (data.label !== undefined && data.label !== null) ? String(data.label) : 'Node',
 			note: data.note || '',
 			depth,
-			collapsed: !!data.collapsed,
+			collapsed: false,
 			tree_side: data.tree_side || null,
 			_parent: parent,
 			_id: data._id || Math.random().toString(36).slice(2, 9),
@@ -1192,10 +1214,12 @@ class MindMapPage {
 				const wasCollapsed = !!n.collapsed;
 				n.collapsed = !n.collapsed;
 				this._push_history();
-				this.tree = this._build(this._serialize(this.tree), null);
-				this._re_render();
-				this._mark_dirty();
+				this._save_collapse_state();
+				this._rebuild_tree();
 				const updatedNode = this._find_by_id(this.tree, n._id);
+				if (updatedNode) updatedNode.collapsed = n.collapsed;
+				this._re_render();
+				this._save_collapse_state();
 				if (wasCollapsed && updatedNode) {
 					this._fit_subtree_view(updatedNode);
 				}
@@ -1239,6 +1263,7 @@ class MindMapPage {
 
 	_setup_dnd(grp, n) {
 		grp.addEventListener('mousedown', (e) => {
+			if (this._read_only) return;
 			if (e.button !== 0 || this._is_editing()) return;
 			if (e.target.closest('.mm-btn')) return;
 			if (this._selected_nodes.size > 1) return;
@@ -1366,6 +1391,7 @@ class MindMapPage {
 	}
 
 	_move_node_relative(node, target, mode) {
+		if (this._read_only) return;
 		if (!node || !target || !node._parent || node._parent !== target._parent) return;
 		const parent = node._parent;
 		const fromIdx = parent.children.indexOf(node);
@@ -1379,12 +1405,14 @@ class MindMapPage {
 		if (!parent._parent && (this.field_layout?.get_value() || 'Right') === 'Tree') {
 			node.tree_side = target.tree_side || node.tree_side || 'right';
 		}
-		this.tree = this._build(this._serialize(this.tree), null);
+		this._save_collapse_state();
+		this._rebuild_tree();
 		this._re_render();
 		this._mark_dirty();
 	}
 
 	_move_node_to_parent(node, newParent) {
+		if (this._read_only) return;
 		if (!node || !newParent || !this._can_reparent(node, newParent)) return;
 		this._push_history();
 		node._parent.children = node._parent.children.filter(c => c !== node);
@@ -1394,7 +1422,8 @@ class MindMapPage {
 			node.tree_side = newParent.children.length % 2 === 0 ? 'left' : 'right';
 		}
 		newParent.collapsed = false;
-		this.tree = this._build(this._serialize(this.tree), null);
+		this._save_collapse_state();
+		this._rebuild_tree();
 		this._re_render();
 		this._mark_dirty();
 	}
@@ -1524,6 +1553,7 @@ class MindMapPage {
 	}
 
 	_delete_selected_nodes() {
+		if (this._read_only) return;
 		let changed = false;
 		this._selected_nodes.forEach(id => {
 			const n = this._find_by_id(this.tree, id);
@@ -1536,7 +1566,8 @@ class MindMapPage {
 		this.selected = null;
 		if (changed) {
 			this._push_history();
-			this.tree = this._build(this._serialize(this.tree), null);
+			this._save_collapse_state();
+			this._rebuild_tree();
 			this._re_render();
 			this._mark_dirty();
 		}
@@ -1545,6 +1576,7 @@ class MindMapPage {
 	// ── Context Menu ───────────────────────────────────────────────────────────
 
 	_show_ctx(node, x, y) {
+		if (this._read_only) return;
 		const isAlreadySelected = !!(this.selected && this.selected._id === node._id);
 		const isInMultiSelection = this._selected_nodes.has(node._id);
 		const multiCount = this._selected_nodes.size;
@@ -1603,6 +1635,7 @@ class MindMapPage {
 	// ── Rename ─────────────────────────────────────────────────────────────────
 
 	_start_rename(node, opts = {}) {
+		if (this._read_only) return;
 		if (!node || !node._el_rect) return;
 
 		const grp = node._el_rect.parentNode;
@@ -1788,13 +1821,14 @@ class MindMapPage {
 			node.label = val;
 			node.w = calcW(val);
 			this._set_label_text(oldText, val);
-			restoreEditState();
+				restoreEditState();
 
-			this._push_history();
-			this.tree = this._build(this._serialize(this.tree), null);
-			this._re_render();
-			this._mark_dirty();
-		};
+				this._push_history();
+				this._save_collapse_state();
+				this._rebuild_tree();
+				this._re_render();
+				this._mark_dirty();
+			};
 
 		let _saved = false;
 		const saveOnce = () => { if (!_saved) { _saved = true; save(); } };
@@ -1883,7 +1917,8 @@ class MindMapPage {
 		if (node._parent) {
 			node._parent.children = node._parent.children.filter(child => child._id !== nodeId);
 		}
-		this.tree = this._build(this._serialize(this.tree), null);
+		this._save_collapse_state();
+		this._rebuild_tree();
 		this._re_render();
 		this._clear_multi_select();
 		const fallback = fallbackNodeId ? this._find_by_id(this.tree, fallbackNodeId) : null;
@@ -1892,6 +1927,7 @@ class MindMapPage {
 	}
 
 	_add_child(node) {
+		if (this._read_only) return;
 		const newId = Math.random().toString(36).slice(2, 9);
 		const previousSelectedId = this.selected?._id || node._id;
 		const c = {
@@ -1903,7 +1939,8 @@ class MindMapPage {
 		if (!node.children) node.children = [];
 		node.children.push(c);
 		node.collapsed = false;
-		this.tree = this._build(this._serialize(this.tree), null);
+		this._save_collapse_state();
+		this._rebuild_tree();
 		this._re_render();
 		this._scroll_to(c);
 
@@ -1921,6 +1958,7 @@ class MindMapPage {
 	}
 
 	_add_sibling(node) {
+		if (this._read_only) return;
 		if (!node._parent) return;
 		const newId = Math.random().toString(36).slice(2, 9);
 		const previousSelectedId = this.selected?._id || node._id;
@@ -1932,7 +1970,8 @@ class MindMapPage {
 			tree_side: node.tree_side || null
 		};
 		node._parent.children.splice(node._parent.children.indexOf(node) + 1, 0, s);
-		this.tree = this._build(this._serialize(this.tree), null);
+		this._save_collapse_state();
+		this._rebuild_tree();
 		this._re_render();
 		this._scroll_to(s);
 		setTimeout(() => {
@@ -1949,6 +1988,7 @@ class MindMapPage {
 	}
 
 	_add_parent(node) {
+		if (this._read_only) return;
 		if (!node._parent) return;
 		const oldP = node._parent;
 		const idx = oldP.children.indexOf(node);
@@ -1960,18 +2000,21 @@ class MindMapPage {
 		node._parent = newP;
 		oldP.children.splice(idx, 1, newP);
 		this._push_history();
-		this.tree = this._build(this._serialize(this.tree), null);
+		this._save_collapse_state();
+		this._rebuild_tree();
 		this._re_render();
 		this._scroll_to(newP);
 		setTimeout(() => this._start_rename(this._find_by_id(this.tree, newP._id)), 100);
 	}
 
 	_delete_node(node) {
+		if (this._read_only) return;
 		if (!node._parent) return;
 		node._parent.children = node._parent.children.filter(c => c !== node);
 		this.selected = null;
 		this._push_history();
-		this.tree = this._build(this._serialize(this.tree), null);
+		this._save_collapse_state();
+		this._rebuild_tree();
 		this._re_render();
 		this._mark_dirty();
 	}
@@ -2071,6 +2114,7 @@ class MindMapPage {
 	// ── Save / Serialize ───────────────────────────────────────────────────────
 
 	_save(opts = {}) {
+		if (this._read_only) return;
 		const force = !!opts.force;
 		const quiet = !!opts.quiet;
 		if (!this.doc) return;
@@ -2093,14 +2137,12 @@ class MindMapPage {
 				name: this.doc.name,
 				fieldname: {
 					map_json: this._stringify_map(this.tree),
-					theme: this.field_theme?.get_value() || 'Auto',
 					description: this.doc.description || ''
 				}
 			},
 			callback: (r) => {
 				this._save_in_flight = false;
 				this._is_dirty = false;
-				this.doc.theme = this.field_theme?.get_value() || 'Auto';
 				if (r?.message) {
 					if (r.message.modified) this.doc.modified = r.message.modified;
 					if (r.message.name) this.doc.name = r.message.name;
@@ -2113,8 +2155,19 @@ class MindMapPage {
 					this._save(queued);
 				}
 			},
-			error: () => {
+			error: (err) => {
 				this._save_in_flight = false;
+				const isPermError = err?.status === 403 || err?.statusCode === 403 ||
+					err?.responseJSON?.exc_type === 'PermissionError';
+				// Only lock to read-only if we're certain it's a permission denial,
+				// AND the user is not the owner (owner should never be locked out silently)
+				const isOwnerSession = this.doc?.owner === frappe.session.user;
+				if (isPermError && !isOwnerSession) {
+					this._read_only = true;
+					this._apply_read_only_mode();
+					frappe.show_alert({ message: __('You no longer have write access to this Mind Map.'), indicator: 'orange' });
+					return;
+				}
 				this._is_dirty = !force;
 				if (!quiet) this._set_save_status('Unsaved');
 			}
@@ -2127,7 +2180,6 @@ class MindMapPage {
 			label: n.label
 		};
 		if (n.note) out.note = n.note;
-		if (n.collapsed) out.collapsed = true;
 		if (n.tree_side) out.tree_side = n.tree_side;
 		const kids = (n.children || []).map(c => this._serialize(c));
 		if (kids.length) out.child = kids;
@@ -2139,6 +2191,12 @@ class MindMapPage {
 
 	_stringify_map(root) {
 		return JSON.stringify(this._serialize(root), null, 2);
+	}
+
+	_rebuild_tree() {
+		if (!this.tree) return;
+		this.tree = this._build(this._serialize(this.tree), null);
+		this._load_collapse_state();
 	}
 
 	_set_save_status(t, opts = {}) {
@@ -2273,50 +2331,7 @@ class MindMapPage {
 		}
 	}
 
-	// ── Theme / Misc ───────────────────────────────────────────────────────────
-
-	_apply_theme() {
-		const root = document.getElementById('mm-root');
-		if (root) {
-			const theme = this.field_theme?.get_value() || this.doc?.theme || 'Auto';
-			const themeVars = {
-				Light: {
-					'--bg-color': '#f5f7fa',
-					'--card-bg': '#ffffff',
-					'--text-color': '#1f272e',
-					'--text-muted': '#6b7280',
-					'--border-color': '#d1d8dd',
-					'--primary': '#2490ef',
-				},
-				Dark: {
-					'--bg-color': '#1f2329',
-					'--card-bg': '#2a2f36',
-					'--text-color': '#f5f7fa',
-					'--text-muted': '#aab4bf',
-					'--border-color': '#454b53',
-					'--primary': '#5aa9ff',
-				},
-			};
-			['--bg-color', '--card-bg', '--text-color', '--text-muted', '--border-color', '--primary'].forEach(key => {
-				root.style.removeProperty(key);
-			});
-			if (themeVars[theme]) {
-				Object.entries(themeVars[theme]).forEach(([key, value]) => root.style.setProperty(key, value));
-			}
-		}
-		this._update_theme_button();
-		if (!this.tree) return;
-		this.tree = this._build(this._serialize(this.tree), null);
-		this._re_render();
-	}
-
-	_update_theme_button() {
-		const btn = document.getElementById('mm-theme-btn');
-		if (!btn) return;
-		const theme = this.field_theme?.get_value() || this.doc?.theme || 'Auto';
-		btn.textContent = theme === 'Light' ? '☀' : theme === 'Dark' ? '☾' : '◐';
-		btn.setAttribute('title', `Theme: ${theme}`);
-	}
+	// ── Misc ───────────────────────────────────────────────────────────────────
 
 	_update_layout_button() {
 		const btn = document.getElementById('mm-layout-btn');
@@ -2429,13 +2444,6 @@ class MindMapPage {
 		});
 	}
 
-	_cycle_theme() {
-		const order = ['Auto', 'Light', 'Dark'];
-		const current = this.field_theme?.get_value() || 'Auto';
-		const next = order[(order.indexOf(current) + 1) % order.length];
-		this.field_theme.set_value(next);
-	}
-
 	_update_footer_meta() {
 		const text = document.getElementById('mm-description-text');
 		if (text) {
@@ -2445,7 +2453,6 @@ class MindMapPage {
 			text.textContent = value;
 			text.setAttribute('title', value);
 		}
-		this._update_theme_button();
 	}
 
 	_set_canvas_buttons_visible(visible) {
@@ -2457,7 +2464,7 @@ class MindMapPage {
 		};
 
 		// Footer elements
-		['mm-layout-btn', 'mm-expand-collapse-btn', 'mm-theme-btn',
+		['mm-layout-btn', 'mm-expand-collapse-btn',
 		'mm-fit-btn', 'mm-fullscreen-btn', 'mm-mode-label', 'mm-save-status'
 		].forEach(id => forceHide(document.getElementById(id)));
 
@@ -2480,6 +2487,8 @@ class MindMapPage {
 				.find('.inner-group-button[data-label="Export"]')
 				.css('display', display);
 		}
+
+		if (visible && this._read_only) this._apply_read_only_mode();
 	}
 
 	_open_shortcuts_dialog() {
@@ -2523,6 +2532,7 @@ class MindMapPage {
 	}
 
 	_open_description_dialog() {
+		if (this._read_only) return;
 		if (!this.doc) return;
 		const d = new frappe.ui.Dialog({
 			title: __('Edit Description'),
@@ -2545,6 +2555,70 @@ class MindMapPage {
 		d.show();
 	}
 
+	_apply_read_only_mode() {
+		const ro = this._read_only;
+
+		let roLabel = document.getElementById('mm-readonly-label');
+		if (ro) {
+			if (!roLabel) {
+				roLabel = document.createElement('span');
+				roLabel.id = 'mm-readonly-label';
+				roLabel.style.cssText = 'font-weight:600;color:var(--orange-500,#f59e0b);white-space:nowrap';
+				roLabel.textContent = '🔒 Read Only';
+				const footer = document.getElementById('mm-footer');
+				if (footer) footer.insertBefore(roLabel, footer.firstChild);
+			}
+		} else {
+			if (roLabel) roLabel.remove();
+		}
+
+		if (this.page?.btn_primary) {
+			this.page.btn_primary.css('display', ro ? 'none' : '');
+		}
+
+		if (this.page?.inner_toolbar) {
+			this.page.inner_toolbar
+				.find('.inner-group-button[data-label="Export"]')
+				.css('display', ro ? 'none' : '');
+		}
+
+		const layoutBtn = document.getElementById('mm-layout-btn');
+		if (layoutBtn) layoutBtn.style.display = ro ? 'none' : '';
+
+		const descEdit = document.getElementById('mm-description-edit');
+		if (descEdit) descEdit.style.display = ro ? 'none' : '';
+	}
+
+	_collapse_key(docName) {
+		return 'mm_collapse_' + docName;
+	}
+
+	_save_collapse_state() {
+		if (!this.doc?.name || !this.tree) return;
+		const collapsedMap = {};
+		const walk = (node) => {
+			if (node.collapsed) collapsedMap[node._id] = true;
+			(node.children || []).forEach(walk);
+		};
+		walk(this.tree);
+		localStorage.setItem(this._collapse_key(this.doc.name), JSON.stringify(collapsedMap));
+	}
+
+	_load_collapse_state() {
+		if (!this.doc?.name || !this.tree) return;
+		let collapsedMap = {};
+		try {
+			collapsedMap = JSON.parse(localStorage.getItem(this._collapse_key(this.doc.name)) || '{}') || {};
+		} catch (e) {
+			collapsedMap = {};
+		}
+		const walk = (node) => {
+			node.collapsed = !!collapsedMap[node._id];
+			(node.children || []).forEach(walk);
+		};
+		walk(this.tree);
+	}
+
 	_remember_layout() {
 		if (!this.doc?.name) return;
 		localStorage.setItem(`mm_layout_${this.doc.name}`, this.field_layout?.get_value() || 'Right');
@@ -2556,6 +2630,11 @@ class MindMapPage {
 	}
 
 	_restore_last_map() {
+		// Wait until session is ready
+		if (!frappe.session?.user || frappe.session.user === 'Guest') {
+			setTimeout(() => this._restore_last_map(), 300);
+			return;
+		}
 		const l = localStorage.getItem('mm_last_map');
 		if (l) {
 			this._suppress_doc_change = true;
@@ -2597,7 +2676,7 @@ class MindMapPage {
 		bg.setAttribute('width', W); bg.setAttribute('height', H);
 		bg.setAttribute('fill', 'white');
 
-		// Inline text color for dark-theme compatibility
+		// Inline text color for UI compatibility during export
 		cloneG.querySelectorAll('text').forEach(t => {
 			const fill = t.getAttribute('fill');
 			if (fill === 'var(--text-color)' || !fill || fill === '') {
