@@ -465,6 +465,10 @@ class MindMapPage {
 
 			if (!this.selected) return;
 
+			if (this._handle_arrow_navigation(e)) {
+				return;
+			}
+
 			if (e.key === 'Tab') {
 				e.preventDefault();
 				this._add_child(this.selected);
@@ -482,6 +486,54 @@ class MindMapPage {
 				this._clear_multi_select();
 			}
 		});
+	}
+
+	_handle_arrow_navigation(e) {
+		if (!this.selected) return false;
+		let target = null;
+		const isLeftTreeNode = this._is_left_tree_node(this.selected);
+
+		if (e.key === 'ArrowLeft') {
+			target = isLeftTreeNode ? (this.selected.children?.[0] || null) : (this.selected._parent || null);
+		} else if (e.key === 'ArrowRight') {
+			target = isLeftTreeNode ? (this.selected._parent || null) : (this.selected.children?.[0] || null);
+		} else if (e.key === 'ArrowUp') {
+			target = this._get_adjacent_node_same_level(this.selected, -1);
+		} else if (e.key === 'ArrowDown') {
+			target = this._get_adjacent_node_same_level(this.selected, 1);
+		}
+
+		if (!target) return false;
+		e.preventDefault();
+		this._select(target);
+		return true;
+	}
+
+	_is_left_tree_node(node) {
+		const mode = this.field_layout?.get_value() || 'Right';
+		return mode === 'Tree' && this._depth(node) > 0 && !!node?._parent && node.x < node._parent.x;
+	}
+
+	_get_adjacent_node_same_level(node, offset) {
+		if (!node || !offset) return null;
+		const renderRoot = this._get_render_root();
+		if (!renderRoot) return null;
+		const levelNodes = this._get_visible_nodes_at_level(renderRoot, this._depth(node));
+		const index = levelNodes.findIndex(n => n._id === node._id);
+		if (index === -1) return null;
+		return levelNodes[index + offset] || null;
+	}
+
+	_get_visible_nodes_at_level(root, targetDepth) {
+		const nodes = [];
+		const walk = (node) => {
+			if (!node) return;
+			if (this._depth(node) === targetDepth) nodes.push(node);
+			if (node.collapsed) return;
+			(node.children || []).forEach(child => walk(child));
+		};
+		walk(root);
+		return nodes;
 	}
 
 	// ── Undo / Redo ────────────────────────────────────────────────────────────
@@ -2508,6 +2560,10 @@ class MindMapPage {
 								['Ctrl+S', 'Save'],
 								['Tab', 'Add child'],
 								['Shift+Enter', 'Add sibling'],
+								['Arrow Left', 'Select parent node'],
+								['Arrow Right', 'Select first child node'],
+								['Arrow Up', 'Select upper sibling node'],
+								['Arrow Down', 'Select lower sibling node'],
 								['F2', 'Rename selected node'],
 								['Delete', 'Delete selected node'],
 								['Space', 'Pan mode'],
