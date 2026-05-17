@@ -136,15 +136,6 @@ Current shortcuts shown in the app footer:
 - Brainstorming and idea clustering
 - Department, report, and workflow mapping
 
-## Installation
-
-```
-bench get-app https://github.com/nilpatel42/mind_map --branch version-16
-```
-```
-bench install-app mind_map
-```
-
 
 ## License
 
